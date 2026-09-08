@@ -1,0 +1,1 @@
+"""Latent world-model components."""
