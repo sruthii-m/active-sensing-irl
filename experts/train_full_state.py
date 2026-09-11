@@ -1,5 +1,5 @@
 """Full-state expert: PPO (Stable-Baselines3, MlpPolicy) on the FullyObsWrapper
-foraging env. Validate success rate before generating demonstrations."""
+foraging env."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ import argparse
 from pathlib import Path
 
 from stable_baselines3 import PPO
+from stable_baselines3.common.env_util import make_vec_env
 
-from perception_irl.environment import make_full_obs_learning_env
+from environment import make_full_obs_learning_env
 
 
 def evaluate_success_rate(model: PPO, *, n_episodes: int = 50, env_kwargs: dict | None = None) -> float:
@@ -45,9 +46,10 @@ def train(
     clip_range: float = 0.2,
     ent_coef: float = 0.0,
     net_arch: list[int] | None = None,
+    n_envs: int = 1,
 ) -> PPO:
-    """Train the full-state PPO expert and optionally save it at ``save_path``."""
-    env = make_full_obs_learning_env(**(env_kwargs or {}))
+    "Train full-state PPO expert"
+    env = make_vec_env(lambda: make_full_obs_learning_env(**(env_kwargs or {})), n_envs=n_envs)
     model = PPO(
         "MlpPolicy", env, seed=seed, verbose=1,
         learning_rate=learning_rate, n_steps=n_steps, batch_size=batch_size,
@@ -78,12 +80,14 @@ if __name__ == "__main__":
     parser.add_argument("--ent-coef", type=float, default=0.0)
     parser.add_argument("--net-arch", type=int, nargs="+", default=[64, 64])
     parser.add_argument("--eval-episodes", type=int, default=50)
+    parser.add_argument("--n-envs", type=int, default=1, help="Parallel envs collecting rollouts (helps discover sparse reward faster).")
     args = parser.parse_args()
     trained = train(
         total_timesteps=args.timesteps, seed=args.seed, save_path=args.save_path,
         learning_rate=args.learning_rate, n_steps=args.n_steps, batch_size=args.batch_size,
         n_epochs=args.n_epochs, gamma=args.gamma, gae_lambda=args.gae_lambda,
         clip_range=args.clip_range, ent_coef=args.ent_coef, net_arch=args.net_arch,
+        n_envs=args.n_envs,
     )
     success_rate = evaluate_success_rate(trained, n_episodes=args.eval_episodes)
     print(f"Success rate over {args.eval_episodes} episodes: {success_rate:.2%}")
