@@ -3,17 +3,17 @@
 from math import isclose
 import unittest
 
-from perception_irl.analysis.metrics import (
+from analysis.metrics import (
     fixation_time_goal_vs_distractors,
     path_length_vs_shortest_path,
     visited_state_entropy,
 )
-from perception_irl.analysis.entropy_score_baseline import (
+from analysis.entropy_score_baseline import (
     categorical_entropy,
     entropy_score,
     select_entropy_action,
 )
-from perception_irl.analysis.training_curves import _moving_average, _series_points
+from analysis.training_curves import _moving_average, _series_points
 
 
 class MetricsTest(unittest.TestCase):
