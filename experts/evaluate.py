@@ -7,7 +7,7 @@ import argparse
 import numpy as np
 from stable_baselines3 import PPO
 
-from perception_irl.environment import (
+from environment import (
     make_full_obs_learning_env,
     make_partial_obs_learning_env,
 )

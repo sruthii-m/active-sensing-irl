@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=iq-recurrent
-#SBATCH --account=<your-pace-account>      # sacctmgr show associations user=$USER
-#SBATCH --qos=inferno                      
+#SBATCH --account=gts-awu36
+#SBATCH --qos=inferno
 #SBATCH -N1
 #SBATCH -n1
 #SBATCH --cpus-per-task=8
