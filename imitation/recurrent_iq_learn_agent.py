@@ -143,6 +143,7 @@ class RecurrentOfflineSoftQAgent:
             next_V = self.get_targetV(next_obs)
 
         loss, loss_dict = iq_loss(self, current_Q, current_V, next_V, batch)
+        loss_dict["hidden_std"] = obs.std().item()
 
         self.optimizer.zero_grad()
         loss.backward()
