@@ -6,3 +6,4 @@ matplotlib
 stable-baselines3
 sb3-contrib
 optuna
+torch==2.9.1
