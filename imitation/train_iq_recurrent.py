@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import pickle
 import time
 
@@ -67,7 +68,11 @@ def main():
     parser.add_argument("--env", choices=list(ENVS), required=True)
     parser.add_argument("--demo-path", required=True)
     parser.add_argument("--save-path", default=None)
-    parser.add_argument("--steps", type=int, default=4000)
+    parser.add_argument("--max-steps", type=int, default=200_000, help="Safety cap; training stops earlier once eval plateaus.")
+    parser.add_argument("--eval-freq", type=int, default=2000, help="Steps between plateau-check evals.")
+    parser.add_argument("--patience", type=int, default=5, help="Stop after this many evals with no improvement > --min-delta.")
+    parser.add_argument("--min-delta", type=float, default=0.01, help="Minimum success-rate improvement to reset patience.")
+    parser.add_argument("--plateau-eval-episodes", type=int, default=50, help="Episodes used for the cheap in-loop plateau eval (final report still uses --eval-episodes).")
     parser.add_argument("--episodes-per-batch", type=int, default=32)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -108,18 +113,36 @@ def main():
 
     rng = np.random.default_rng(args.seed)
     start = time.time()
-    for step in range(1, args.steps + 1):
+    best_success_rate = -1.0
+    best_state = None
+    evals_without_improvement = 0
+    for step in range(1, args.max_steps + 1):
         idx = rng.choice(len(episodes), size=min(args.episodes_per_batch, len(episodes)), replace=False)
         batch = [(episodes[i][0], episodes[i][1], episodes[i][2], episodes[i][3]) for i in idx]
         loss_dict = agent.update(batch, step=step, target_update_freq=args.target_update_freq)
         if step % 100 == 0:
             elapsed = time.time() - start
             steps_per_sec = step / elapsed
-            eta_min = (args.steps - step) / steps_per_sec / 60
-            print(
-                f"step {step}/{args.steps} ({steps_per_sec:.1f} steps/s, ETA {eta_min:.1f} min): {loss_dict}",
-                flush=True,
-            )
+            print(f"step {step}/{args.max_steps} ({steps_per_sec:.1f} steps/s): {loss_dict}", flush=True)
+
+        if step % args.eval_freq == 0:
+            success_rate = evaluate_policy_success_rate(agent, args.env, args.plateau_eval_episodes, device)
+            print(f"  [eval @ step {step}] success rate: {success_rate:.2%} (best so far: {max(best_success_rate, 0):.2%})", flush=True)
+            if success_rate > best_success_rate + args.min_delta:
+                best_success_rate = success_rate
+                best_state = copy.deepcopy((agent.encoder.state_dict(), agent.q_net.state_dict()))
+                evals_without_improvement = 0
+            else:
+                evals_without_improvement += 1
+                if evals_without_improvement >= args.patience:
+                    print(f"Plateaued: no improvement > {args.min_delta:.2%} for {args.patience} evals. Stopping at step {step}.")
+                    break
+
+    if best_state is not None:
+        agent.encoder.load_state_dict(best_state[0])
+        agent.q_net.load_state_dict(best_state[1])
+        agent.target_net.load_state_dict(best_state[1])
+        print(f"Restored best checkpoint (plateau-eval success rate {best_success_rate:.2%}).")
 
     # Gate 1: reward correlation, computed over every stored transition.
     all_recovered, all_ground_truth = [], []

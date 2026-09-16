@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
@@ -21,7 +21,10 @@ cd "$SLURM_SUBMIT_DIR"
 python -u -m imitation.train_iq_recurrent \
     --env partial_obs \
     --demo-path artifacts/demos/forage_partial_obs_demos.pkl \
-    --steps 30000 \
+    --max-steps 200000 \
+    --eval-freq 3000 \
+    --patience 5 \
+    --min-delta 0.01 \
     --grid-shape 7 7 3 \
     --chi2-alpha 0.5 \
     --latent-dim 128 \
