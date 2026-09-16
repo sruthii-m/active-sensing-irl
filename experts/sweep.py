@@ -84,8 +84,7 @@ def objective(trial: optuna.Trial, *, total_timesteps: int, seed: int, env_kwarg
 def main() -> None:
     parser = argparse.ArgumentParser(description="Optuna sweep for the full-state PPO expert.")
     parser.add_argument("--n-trials", type=int, default=40)
-    parser.add_argument("--timesteps", type=int, default=100_000, help="Per-trial timestep budget (should match the real training run).")
-    parser.add_argument("--n-warmup-evals", type=int, default=3, help="Eval checkpoints to skip before pruning can kick in.")
+    parser.add_argument("--timesteps", type=int, default=30_000, help="Per-trial timestep budget (shorter than a full run).")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--n-jobs", type=int, default=1, help="Parallel trials (only helps with a shared --storage).")
     parser.add_argument("--study-name", default="forage_full_state")
@@ -95,24 +94,18 @@ def main() -> None:
     if args.storage and args.storage.startswith("sqlite:///"):
         Path(args.storage.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
 
-    # Pruner's n_warmup_steps is measured in the same units as the `step` passed to
-    # trial.report (num_timesteps), so convert "skip N eval checkpoints" into a
-    # timestep threshold using the same eval_freq formula the callback uses.
-    eval_freq = max(args.timesteps // 10, 1)
     study = optuna.create_study(
         study_name=args.study_name,
         storage=args.storage,
         load_if_exists=True,
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=args.seed),
-        pruner=optuna.pruners.MedianPruner(
-            n_startup_trials=5, n_warmup_steps=args.n_warmup_evals * eval_freq
-        ),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1),
     )
     starting_params = {
-    "learning_rate": 4e-4,
-    "n_steps": 256,
-    "batch_size": 64
+        "learning_rate": 4e-4,
+        "n_steps": 256,
+        "n_minibatches": 4,
     }
 
     study.enqueue_trial(starting_params)
@@ -121,9 +114,6 @@ def main() -> None:
         lambda trial: objective(trial, total_timesteps=args.timesteps, seed=args.seed, env_kwargs=None),
         n_trials=args.n_trials,
         n_jobs=args.n_jobs,
-        # SQLite storage under concurrent workers can race two "tell" calls onto the
-        # same pruned trial; skip that trial instead of aborting the whole sweep.
-        catch=(ValueError,),
     )
 
     print(f"\nBest success rate: {study.best_value:.2%}")
