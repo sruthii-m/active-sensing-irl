@@ -144,6 +144,10 @@ class RecurrentOfflineSoftQAgent:
 
         loss, loss_dict = iq_loss(self, current_Q, current_V, next_V, batch)
         loss_dict["hidden_std"] = obs.std().item()
+        loss_dict["q_std"] = current_Q.std().item()
+        with torch.no_grad():
+            all_actions_q = self.q_net(obs)
+        loss_dict["q_spread_across_actions"] = (all_actions_q.max(dim=1).values - all_actions_q.min(dim=1).values).mean().item()
 
         self.optimizer.zero_grad()
         loss.backward()
