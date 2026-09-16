@@ -21,7 +21,9 @@ cd "$SLURM_SUBMIT_DIR"
 python -u -m imitation.train_iq_recurrent \
     --env partial_obs \
     --demo-path artifacts/demos/forage_partial_obs_demos.pkl \
-    --steps 15000 \
+    --steps 30000 \
     --grid-shape 7 7 3 \
     --chi2-alpha 0.5 \
-    --save-path artifacts/iq_learn/forage_partial_obs_qnet.pt
+    --latent-dim 128 \
+    --rnn-hidden-dim 256 \
+    --save-path artifacts/iq_learn/forage_partial_obs_qnet_bigger.pt
