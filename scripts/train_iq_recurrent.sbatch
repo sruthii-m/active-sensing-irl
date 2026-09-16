@@ -24,7 +24,8 @@ python -u -m imitation.train_iq_recurrent \
     --max-steps 200000 \
     --eval-freq 3000 \
     --patience 5 \
-    --min-delta 0.01 \
+    --min-delta 0.04 \
+    --plateau-eval-episodes 100 \
     --grid-shape 7 7 3 \
     --chi2-alpha 0.5 \
     --latent-dim 128 \
