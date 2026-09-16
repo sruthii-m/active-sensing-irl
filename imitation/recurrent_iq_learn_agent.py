@@ -1,6 +1,4 @@
-"""Offline IQ-Learn for the partial-obs foraging task. Same objective as
-iq_learn_agent.py, but the Q-head reads a RecurrentEncoder belief state
-instead of the raw observation, since one egocentric frame isn't Markov.
+"""Offline IQ-Learn for the partial-obs foraging task.
 
 Reuses the same SimpleQNetwork Q-head as the full-state agent, fed
 rnn_hidden_dim vs. raw obs size. Only the Q-head gets a periodic
@@ -87,11 +85,8 @@ class RecurrentOfflineSoftQAgent:
         for i, (states, *_rest) in enumerate(episodes):
             padded_states[: lengths[i], i] = states
 
-        # The featurizer (CNN/MLP over one frame) has no temporal dependency,
-        # so run it once on every (t, episode) pair batched together instead
-        # of once per timestep in the loop below. With a CNN front-end,
-        # re-running convolutions max_len separate times was the difference
-        # between ~1 minute and never finishing.
+        # featurizer (CNN/MLP) is over one frame with no temporal dependency, meaning we run it once
+        # every (t,episode) pair batched together vs. once per timestep
         flat_obs = padded_states.reshape(max_len * batch_size, obs_dim)
         flat_latent = self.encoder._featurize(flat_obs)
         latents = flat_latent.view(max_len, batch_size, -1)
@@ -143,6 +138,8 @@ class RecurrentOfflineSoftQAgent:
             next_V = self.get_targetV(next_obs)
 
         loss, loss_dict = iq_loss(self, current_Q, current_V, next_V, batch)
+         
+        # investigative metrics
         loss_dict["hidden_std"] = obs.std().item()
         loss_dict["q_std"] = current_Q.std().item()
         with torch.no_grad():
