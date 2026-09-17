@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=iq-recurrent
+#SBATCH --job-name=iq-recurrent-400demos
 #SBATCH --account=gts-awu36
 #SBATCH --qos=embers
 #SBATCH -N1
@@ -18,9 +18,13 @@ source activate active-sensing-irl  #source /path/to/venv/bin/activate
 
 cd "$SLURM_SUBMIT_DIR"
 
+# Data-scaling test: identical config to train_iq_recurrent.sbatch (run 5/7),
+# but 400 demo episodes instead of 200 -- checks whether the ~55-66% success
+# ceiling seen across runs 5/6/7/8 is a data limit or a genuine
+# partial-observability information limit.
 python -u -m imitation.train_iq_recurrent \
     --env partial_obs \
-    --demo-path artifacts/demos/forage_partial_obs_demos.pkl \
+    --demo-path artifacts/demos/forage_partial_obs_demos_400.pkl \
     --max-steps 200000 \
     --eval-freq 3000 \
     --patience 5 \
@@ -30,4 +34,4 @@ python -u -m imitation.train_iq_recurrent \
     --chi2-alpha 0.5 \
     --latent-dim 128 \
     --rnn-hidden-dim 256 \
-    --save-path artifacts/iq_learn/forage_partial_obs_qnet_bigger.pt
+    --save-path artifacts/iq_learn/forage_partial_obs_qnet_400demos.pt
