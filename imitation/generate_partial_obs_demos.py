@@ -7,6 +7,8 @@ from __future__ import annotations
 import pickle
 from pathlib import Path
 
+from environment.experiment_config import add_environment_args, environment_kwargs
+
 import numpy as np
 from sb3_contrib import RecurrentPPO
 
@@ -56,6 +58,9 @@ def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str
     with open(out_path, "wb") as f:
         pickle.dump(
             {
+                "env_kwargs": env_kwargs or {},
+                "seed_start": seed,
+                "attempts": attempts,
                 "states": states,
                 "next_states": next_states,
                 "actions": actions,
@@ -80,5 +85,6 @@ if __name__ == "__main__":
     parser.add_argument("--out-path", default="artifacts/demos/forage_partial_obs_demos.pkl")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-length", type=int, default=100, help="Reject successful episodes longer than this (near-timeout, likely lucky rather than confident).")
+    add_environment_args(parser)
     args = parser.parse_args()
-    generate(args.model_path, env_kwargs=None, num_episodes=args.num_episodes, out_path=args.out_path, seed=args.seed, max_length=args.max_length)
+    generate(args.model_path, env_kwargs=environment_kwargs(args), num_episodes=args.num_episodes, out_path=args.out_path, seed=args.seed, max_length=args.max_length)

@@ -47,8 +47,16 @@ class ForageEnv(MiniGridEnv):
         self.mission = "get to the green goal square"
 
 
-def make_forage_env(*, size: int = 10, num_distractors: int = 3, render_mode: str | None = None) -> ForageEnv:
-    return ForageEnv(size=size, num_distractors=num_distractors, render_mode=render_mode)
+def make_forage_env(*, size: int = 10, num_distractors: int = 3,
+                    agent_view_size: int = 7, max_steps: int | None = None,
+                    render_mode: str | None = None) -> ForageEnv:
+    if size < 4 or not 0 <= num_distractors <= (size - 2) ** 2 - 2:
+        raise ValueError("Room must fit agent, goal, and distractors.")
+    if agent_view_size < 3 or agent_view_size % 2 != 1:
+        raise ValueError("agent_view_size must be odd and at least 3.")
+    return ForageEnv(size=size, num_distractors=num_distractors,
+                     agent_view_size=agent_view_size, max_steps=max_steps,
+                     render_mode=render_mode)
 
 
 def fraction_goal_initially_visible(num_episodes: int = 1000, **env_kwargs) -> float:

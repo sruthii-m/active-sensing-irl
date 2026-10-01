@@ -1,15 +1,11 @@
-"""Roll out the trained full-state expert and save trajectories in the format
-iq_learn/dataset/expert_dataset.py expects, for train_iq.py's `demo:` config.
-
-Gate before moving to step 3: a policy trained against the recovered reward
-reproduces expert performance (reward correlation alone is a weak check given
-this task's sparse terminal reward).
-"""
+"""Roll out the trained full-state expert and save trajectories for train_iq.py's `demo:` config."""
 
 from __future__ import annotations
 
 import pickle
 from pathlib import Path
+
+from environment.experiment_config import add_environment_args, environment_kwargs
 
 import numpy as np
 from stable_baselines3 import PPO
@@ -57,6 +53,9 @@ def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str
     with open(out_path, "wb") as f:
         pickle.dump(
             {
+                "env_kwargs": env_kwargs or {},
+                "seed_start": seed,
+                "attempts": attempts,
                 "states": states,
                 "next_states": next_states,
                 "actions": actions,
@@ -80,5 +79,6 @@ if __name__ == "__main__":
     parser.add_argument("--num-episodes", type=int, default=200)
     parser.add_argument("--out-path", default="artifacts/demos/forage_full_state_demos.pkl")
     parser.add_argument("--seed", type=int, default=0)
+    add_environment_args(parser)
     args = parser.parse_args()
-    generate(args.model_path, env_kwargs=None, num_episodes=args.num_episodes, out_path=args.out_path, seed=args.seed)
+    generate(args.model_path, env_kwargs=environment_kwargs(args), num_episodes=args.num_episodes, out_path=args.out_path, seed=args.seed)

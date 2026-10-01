@@ -14,6 +14,8 @@ from __future__ import annotations
 import argparse
 import pickle
 
+from environment.experiment_config import add_environment_args, environment_kwargs
+
 import numpy as np
 import torch
 
@@ -61,6 +63,7 @@ def main():
     parser.add_argument("--target-update-freq", type=int, default=4)
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
+    add_environment_args(parser)
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -97,7 +100,7 @@ def main():
     correlation = np.corrcoef(recovered_reward, ground_truth_reward)[0, 1]
     print(f"\nGate 1 -- reward correlation (recovered vs. ground truth): {correlation:.3f}")
 
-    success_rate = evaluate_policy_success_rate(agent, n_episodes=args.eval_episodes)
+    success_rate = evaluate_policy_success_rate(agent, n_episodes=args.eval_episodes, env_kwargs=environment_kwargs(args))
     print(f"Gate 2 -- policy success rate from learned Q ({args.eval_episodes} episodes): {success_rate:.2%}")
 
     import pathlib

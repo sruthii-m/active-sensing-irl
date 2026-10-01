@@ -7,6 +7,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from environment.experiment_config import add_environment_args, environment_kwargs
+
 import numpy as np
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.env_util import make_vec_env
@@ -95,13 +97,15 @@ if __name__ == "__main__":
     parser.add_argument("--lstm-hidden-size", type=int, default=128)
     parser.add_argument("--n-envs", type=int, default=1, help="Parallel envs collecting rollouts (helps discover sparse reward faster).")
     parser.add_argument("--eval-episodes", type=int, default=50)
+    add_environment_args(parser)
     args = parser.parse_args()
     trained = train(
         total_timesteps=args.timesteps, seed=args.seed, save_path=args.save_path,
+        env_kwargs=environment_kwargs(args),
         learning_rate=args.learning_rate, n_steps=args.n_steps, batch_size=args.batch_size,
         n_epochs=args.n_epochs, gamma=args.gamma, gae_lambda=args.gae_lambda,
         clip_range=args.clip_range, ent_coef=args.ent_coef, net_arch=args.net_arch,
         lstm_hidden_size=args.lstm_hidden_size, n_envs=args.n_envs,
     )
-    success_rate = evaluate_success_rate(trained, n_episodes=args.eval_episodes)
+    success_rate = evaluate_success_rate(trained, n_episodes=args.eval_episodes, env_kwargs=environment_kwargs(args))
     print(f"Success rate over {args.eval_episodes} episodes: {success_rate:.2%}")

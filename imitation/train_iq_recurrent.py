@@ -14,6 +14,8 @@ import copy
 import pickle
 import time
 
+from environment.experiment_config import add_environment_args, environment_kwargs
+
 import numpy as np
 import torch
 
@@ -45,8 +47,8 @@ def load_episodes(demo_path: str, device: str):
     return episodes
 
 
-def evaluate_policy_success_rate(agent: RecurrentOfflineSoftQAgent, env_name: str, n_episodes: int, device: str) -> float:
-    env = ENVS[env_name]()
+def evaluate_policy_success_rate(agent: RecurrentOfflineSoftQAgent, env_name: str, n_episodes: int, device: str, env_kwargs: dict | None = None) -> float:
+    env = ENVS[env_name](**(env_kwargs or {}))
     successes = 0
     for _ in range(n_episodes):
         obs, _ = env.reset()
@@ -88,6 +90,7 @@ def main():
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default=None, help="Defaults to cuda if available, else cpu.")
+    add_environment_args(parser)
     args = parser.parse_args()
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -126,7 +129,7 @@ def main():
             print(f"step {step}/{args.max_steps} ({steps_per_sec:.1f} steps/s): {loss_dict}", flush=True)
 
         if step % args.eval_freq == 0:
-            success_rate = evaluate_policy_success_rate(agent, args.env, args.plateau_eval_episodes, device)
+            success_rate = evaluate_policy_success_rate(agent, args.env, args.plateau_eval_episodes, device, environment_kwargs(args))
             print(f"  [eval @ step {step}] success rate: {success_rate:.2%} (best so far: {max(best_success_rate, 0):.2%})", flush=True)
             if success_rate > best_success_rate + args.min_delta:
                 best_success_rate = success_rate
@@ -158,7 +161,7 @@ def main():
     correlation = np.corrcoef(recovered, ground_truth)[0, 1]
     print(f"\nReward correlation (recovered vs. ground truth): {correlation:.3f}")
 
-    success_rate = evaluate_policy_success_rate(agent, args.env, args.eval_episodes, device)
+    success_rate = evaluate_policy_success_rate(agent, args.env, args.eval_episodes, device, environment_kwargs(args))
     print(f"Policy success rate from learned Q ({args.eval_episodes} episodes): {success_rate:.2%}")
 
     if args.save_path:
