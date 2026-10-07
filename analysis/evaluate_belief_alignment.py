@@ -44,16 +44,15 @@ def main():
                 q = agent.q_net(hidden)[0].numpy()
                 scores, new = belief.action_scores(env)
                 ig_action, ties = select_action(scores)
-                reward_action = int(q.argmax())  # seven-action policy
+                alignment = action_alignment(q, scores, ig_action, ties)
+                reward_action = alignment['executed_action']  # seven-action policy
                 row = dict(episode=episode, seed=args.seed + episode, timestep=timestep,
                            agent_x=int(env.unwrapped.agent_pos[0]), agent_y=int(env.unwrapped.agent_pos[1]),
                            direction=int(env.unwrapped.agent_dir), goal_x=goal[0], goal_y=goal[1],
                            goal_seen=belief.goal_seen, candidates=len(belief.candidates),
                            entropy_nats=belief.entropy, resolved=belief.resolved,
                            ig_argmax=ig_action,
-                           ig_tie=len(ties) > 1, ig_all_tied=len(ties) == len(ACTIONS),
-                           **action_alignment(q, scores, ig_action, ties),
-                           executed_action=reward_action)
+                           **alignment)
                 for a in range(len(q)):
                     row[f'q_{a}'] = float(q[a])
                 for a in ACTIONS:
