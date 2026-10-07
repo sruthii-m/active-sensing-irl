@@ -9,7 +9,7 @@ import torch
 from environment import make_partial_obs_learning_env
 from analysis.discrete_goal_belief import DiscreteGoalBelief, select_action, ACTIONS
 from analysis.policy_io import add_policy_args, load_policy, representation
-from analysis.alignment_metrics import rank_correlation, summarize
+from analysis.alignment_metrics import action_alignment, summarize
 
 
 def main():
@@ -44,20 +44,14 @@ def main():
                 q = agent.q_net(hidden)[0].numpy()
                 scores, new = belief.action_scores(env)
                 ig_action, ties = select_action(scores)
-                reward_action = int(q.argmax())  # seven-action policy
-                candidate_action = max(ACTIONS, key=lambda a: q[a])
+                alignment = action_alignment(q, scores, ig_action, ties, ACTIONS)
+                reward_action = alignment['executed_action']  # seven-action policy
                 row = dict(episode=episode, seed=args.seed + episode, timestep=timestep,
                            agent_x=int(env.unwrapped.agent_pos[0]), agent_y=int(env.unwrapped.agent_pos[1]),
                            direction=int(env.unwrapped.agent_dir), goal_x=goal[0], goal_y=goal[1],
                            goal_seen=belief.goal_seen, candidates=len(belief.candidates),
                            entropy_nats=belief.entropy, resolved=belief.resolved,
-                           iq_argmax=candidate_action, iq_argmax_all=reward_action,
-                           ig_argmax=ig_action, agreement=candidate_action == ig_action,
-                           ig_tie=len(ties) > 1, ig_all_tied=len(ties) == len(ACTIONS),
-                           q_tie=sum(abs(q[a] - q[candidate_action]) <= 1e-10 for a in ACTIONS) > 1,
-                           q_in_ig_maximizers=candidate_action in ties,
-                           spearman=rank_correlation(q[list(ACTIONS)], list(scores.values())),
-                           executed_action=reward_action)
+                           ig_argmax=ig_action, **alignment)
                 for a in range(len(q)):
                     row[f'q_{a}'] = float(q[a])
                 for a in ACTIONS:

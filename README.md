@@ -69,6 +69,29 @@ information_gain(a) = H[b_t] - E_o'[H[b_{t+1} | a, o']]
 
 Action agreement and behavioral metrics can then compare reward-driven sensing with explicit uncertainty minimization.
 
+The exact Bayesian evaluator (`python -m analysis.evaluate_belief_alignment`) compares
+the policy's executed argmax over all seven MiniGrid actions with information gain
+over left, right, and forward. Its CSV `agreement` and `q_in_ig_maximizers` fields
+use that actual policy action; pickup, drop, toggle, and done count as disagreement.
+`iq_argmax`, `iq_argmax_all`, and `executed_action` identify the actual action,
+while `iq_argmax_navigation` identifies the best navigation-only Q value.
+
+JSON summaries report these metrics overall, by belief resolution, and by candidate
+count. Use strict `agreement_unique_ig` (steps with a unique IG maximum) and strict
+`q_in_ig_maximizers` (steps where IG is not tied across all navigation actions)
+to assess policy-level active sensing. `agreement` includes all steps, using the
+deterministic first IG maximizer, and
+`policy_argmax_outside_navigation_fraction` uses all steps in each group.
+Metrics ending in `_navigation_conditional` retain the previous comparison after
+restricting the Q argmax to navigation, evaluated on the same steps; they do not
+filter out non-navigation policy choices and are diagnostic only.
+`spearman_navigation`, `mean_spearman_navigation`, and `rank_steps_navigation`
+explicitly label the navigation-only rank comparison; constant rankings remain
+undefined and are excluded from the mean. Empty summary denominators yield null.
+This changes the meaning of the former navigation-only `agreement`,
+`q_in_ig_maximizers`, and `iq_argmax` fields; rerun older evaluations before using
+them for policy-level claims.
+
 ## World-model extension
 
 The planned extension replaces the recurrent encoder with an action-conditioned stochastic latent world model:
