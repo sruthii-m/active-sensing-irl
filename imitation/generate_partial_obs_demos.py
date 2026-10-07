@@ -15,7 +15,7 @@ from sb3_contrib import RecurrentPPO
 from environment import make_partial_obs_learning_env
 
 
-def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str, seed: int = 0, max_length: int | None = 100):
+def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str, seed: int = 0, max_length: int | None = 100, keep_all: bool = False):
     model = RecurrentPPO.load(model_path)
     env = make_partial_obs_learning_env(**(env_kwargs or {}))
 
@@ -42,7 +42,7 @@ def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str
             episode_start = np.zeros((1,), dtype=bool)
 
         # drop failures and lucky near-timeout wins
-        if sum(ep_rewards) <= 0 or (max_length is not None and len(ep_actions) > max_length):
+        if not keep_all and (sum(ep_rewards) <= 0 or (max_length is not None and len(ep_actions) > max_length)):
             continue
 
         states.append(np.stack(ep_states))
@@ -52,12 +52,15 @@ def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str
         dones.append(np.array(ep_dones, dtype=bool))
         lengths.append(len(ep_actions))
     env.close()
-    print(f"Kept {num_episodes} successful trajectories out of {attempts} rollouts.")
+    print(f"Kept {num_episodes} trajectories out of {attempts} rollouts.")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "wb") as f:
         pickle.dump(
             {
+                "selection": "all" if keep_all else "successful_filtered",
+                "expert_model": model_path,
+                "deterministic": True,
                 "env_kwargs": env_kwargs or {},
                 "seed_start": seed,
                 "attempts": attempts,
@@ -72,7 +75,7 @@ def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str
         )
     print(
         f"Saved {num_episodes} trajectories to {out_path} "
-        f"(mean length {np.mean(lengths):.1f}, success rate 100.0%)"
+        f"(mean length {np.mean(lengths):.1f}, retained success rate {np.mean([r.sum() > 0 for r in rewards]):.1%})"
     )
 
 
@@ -85,6 +88,7 @@ if __name__ == "__main__":
     parser.add_argument("--out-path", default="artifacts/demos/forage_partial_obs_demos.pkl")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-length", type=int, default=100, help="Reject successful episodes longer than this (near-timeout, likely lucky rather than confident).")
+    parser.add_argument("--keep-all", action="store_true", help="Evaluation: retain failures and long episodes too.")
     add_environment_args(parser)
     args = parser.parse_args()
-    generate(args.model_path, env_kwargs=environment_kwargs(args), num_episodes=args.num_episodes, out_path=args.out_path, seed=args.seed, max_length=args.max_length)
+    generate(args.model_path, env_kwargs=environment_kwargs(args), num_episodes=args.num_episodes, out_path=args.out_path, seed=args.seed, max_length=args.max_length, keep_all=args.keep_all)
