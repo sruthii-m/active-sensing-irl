@@ -59,7 +59,7 @@ PY
 )
     python -u -m "imitation.generate_${mode}_demos" "${common[@]}" \
       --model-path "$run/expert" --num-episodes 100 --seed "$heldout_seed" \
-      --out-path "$run/heldout.pkl"
+      --keep-all --out-path "$run/heldout.pkl"
     ;;
   iq)
     if [[ "$mode" == partial_obs ]]; then
@@ -77,7 +77,10 @@ PY
     ;;
   evaluate)
     policy=(--checkpoint "$run/iq.pt" --init-temp 0.001 --gamma 0.99 "${cnn[@]}")
+    expert_kind=ppo
+    if [[ "$mode" == partial_obs ]]; then expert_kind=recurrent; fi
     python -u -m analysis.expert_likelihood "${policy[@]}" \
+      --expert-model "$run/expert" --expert-kind "$expert_kind" \
       --heldout-demos "$run/heldout.pkl" --output "$run/likelihood.json"
     # Shared layouts across FOVs; demos start at 100000, evaluation at 10000.
     eval_seed=10000
