@@ -13,7 +13,7 @@ from stable_baselines3 import PPO
 from environment import make_full_obs_learning_env
 
 
-def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str, seed: int = 0, keep_all: bool = False):
+def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str, seed: int = 0, keep_all: bool = True):
     model = PPO.load(model_path)
     env = make_full_obs_learning_env(**(env_kwargs or {}))
 
@@ -34,9 +34,7 @@ def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str
             ep_dones.append(bool(terminated))
             obs = next_obs
 
-        # Only keep successful rollouts as demonstrations — a timed-out episode
-        # is not expert behavior and would teach IQ-Learn that wandering for
-        # max_steps is optimal.
+        # Optional legacy filtering; failures are also part of expert behavior.
         if not keep_all and sum(ep_rewards) <= 0:
             continue
 
@@ -82,7 +80,10 @@ if __name__ == "__main__":
     parser.add_argument("--num-episodes", type=int, default=200)
     parser.add_argument("--out-path", default="artifacts/demos/forage_full_state_demos.pkl")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--keep-all", action="store_true", help="Evaluation: retain failures and long episodes too.")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--keep-all", dest="keep_all", action="store_true", help="Retain every expert rollout, including failures and long episodes (default).")
+    selection.add_argument("--successful-only", dest="keep_all", action="store_false", help="Legacy filtered-data experiment only: exclude failures.")
+    parser.set_defaults(keep_all=True)
     add_environment_args(parser)
     args = parser.parse_args()
     generate(args.model_path, env_kwargs=environment_kwargs(args), num_episodes=args.num_episodes, out_path=args.out_path, seed=args.seed, keep_all=args.keep_all)

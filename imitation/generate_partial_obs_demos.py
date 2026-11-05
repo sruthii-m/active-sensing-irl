@@ -15,7 +15,7 @@ from sb3_contrib import RecurrentPPO
 from environment import make_partial_obs_learning_env
 
 
-def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str, seed: int = 0, max_length: int | None = 100, keep_all: bool = False):
+def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str, seed: int = 0, max_length: int | None = 100, keep_all: bool = True):
     model = RecurrentPPO.load(model_path)
     env = make_partial_obs_learning_env(**(env_kwargs or {}))
 
@@ -41,7 +41,7 @@ def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str
             obs = next_obs
             episode_start = np.zeros((1,), dtype=bool)
 
-        # drop failures and lucky near-timeout wins
+        # Optional legacy filtering; imitation datasets retain all rollouts by default.
         if not keep_all and (sum(ep_rewards) <= 0 or (max_length is not None and len(ep_actions) > max_length)):
             continue
 
@@ -87,8 +87,11 @@ if __name__ == "__main__":
     parser.add_argument("--num-episodes", type=int, default=200)
     parser.add_argument("--out-path", default="artifacts/demos/forage_partial_obs_demos.pkl")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--max-length", type=int, default=100, help="Reject successful episodes longer than this (near-timeout, likely lucky rather than confident).")
-    parser.add_argument("--keep-all", action="store_true", help="Evaluation: retain failures and long episodes too.")
+    parser.add_argument("--max-length", type=int, default=100, help="Only with --successful-only: reject episodes longer than this. Ignored in default keep-all mode.")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--keep-all", dest="keep_all", action="store_true", help="Retain every expert rollout, including failures and long episodes (default).")
+    selection.add_argument("--successful-only", dest="keep_all", action="store_false", help="Legacy filtered-data experiment only: exclude failures.")
+    parser.set_defaults(keep_all=True)
     add_environment_args(parser)
     args = parser.parse_args()
     generate(args.model_path, env_kwargs=environment_kwargs(args), num_episodes=args.num_episodes, out_path=args.out_path, seed=args.seed, max_length=args.max_length, keep_all=args.keep_all)

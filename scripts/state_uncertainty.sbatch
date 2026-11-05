@@ -12,7 +12,7 @@
 #SBATCH --error=logs/%x-%j.err
 
 # Submit from repo root: sbatch scripts/state_uncertainty.sbatch expert partial_obs 7 0
-# Arguments: stage {expert,demos,iq,evaluate}, mode {partial_obs,full_state}, FOV, seed.
+# Arguments: stage {expert,demos,iq,evaluate,learning_progress}, mode, FOV, seed, optional output directory.
 # Resource/module settings follow this repository's existing PACE scripts.
 set -eo pipefail
 module load anaconda3 cuda
@@ -22,14 +22,18 @@ cd "${SLURM_SUBMIT_DIR:?Submit from the repository root}"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export MPLCONFIGDIR="${TMPDIR:-/tmp}/active-sensing-mpl-${SLURM_JOB_ID}"
 
-stage=${1:?Specify expert, demos, iq, or evaluate}
+stage=${1:?Specify expert, demos, iq, evaluate, or learning_progress}
 mode=${2:-partial_obs}
 fov=${3:-7}
 seed=${4:-0}
 case "$mode" in partial_obs|full_state) ;; *) echo 'Invalid mode' >&2; exit 2;; esac
 case "$fov" in 3|5|7) ;; *) echo 'FOV must be 3, 5, or 7' >&2; exit 2;; esac
 [[ "$seed" =~ ^[0-9]+$ ]] || { echo 'Seed must be nonnegative' >&2; exit 2; }
-run="artifacts/state_uncertainty/${mode}_fov${fov}_seed${seed}"
+run=${5:-artifacts/state_uncertainty/${mode}_fov${fov}_seed${seed}}
+if [[ "$stage" == expert && -e "$run" ]]; then
+    echo "Refusing to overwrite existing run: $run" >&2
+    exit 2
+fi
 mkdir -p "$run"
 common=(--size 10 --num-distractors 0 --view-size "$fov")
 cnn=()
@@ -48,7 +52,7 @@ case "$stage" in
     # Generate fresh demos in the same condition. No reuse of old distractor data.
     python -u -m "imitation.generate_${mode}_demos" "${common[@]}" \
       --model-path "$run/expert" --num-episodes 400 --seed 100000 \
-      --out-path "$run/train.pkl"
+      --keep-all --out-path "$run/train.pkl"
     # Avoid overlap even if expert failures required many reset attempts.
     heldout_seed=$(python - "$run/train.pkl" <<'PY'
 import pickle, sys
@@ -60,13 +64,23 @@ PY
     python -u -m "imitation.generate_${mode}_demos" "${common[@]}" \
       --model-path "$run/expert" --num-episodes 100 --seed "$heldout_seed" \
       --keep-all --out-path "$run/heldout.pkl"
+    validation_seed=$(python - "$run/heldout.pkl" <<'PYSEED'
+import pickle, sys
+with open(sys.argv[1], 'rb') as f:
+    data = pickle.load(f)
+print(data['seed_start'] + data['attempts'] + 1000)
+PYSEED
+)
+    python -u -m "imitation.generate_${mode}_demos" "${common[@]}" \
+      --model-path "$run/expert" --num-episodes 100 --seed "$validation_seed" \
+      --keep-all --out-path "$run/validation.pkl"
     ;;
   iq)
     if [[ "$mode" == partial_obs ]]; then
       python -u -m imitation.train_iq_recurrent "${common[@]}" \
-        --env partial_obs --demo-path "$run/train.pkl" --seed "$seed" \
-        --max-steps 200000 --eval-freq 3000 --patience 5 --min-delta 0.04 \
-        --plateau-eval-episodes 100 --eval-episodes 100 "${cnn[@]}" \
+        --env partial_obs --demo-path "$run/train.pkl" --validation-demo-path "$run/validation.pkl" --checkpoint-dir "$run/checkpoints" --seed "$seed" \
+        --max-steps 200000 --eval-freq 3000 --patience 5 --min-delta 0.001 \
+        --eval-episodes 100 "${cnn[@]}" \
         --chi2-alpha 0.5 --latent-dim 128 --rnn-hidden-dim 256 \
         --init-temp 0.001 --gamma 0.99 --save-path "$run/iq.pt"
     else
@@ -95,5 +109,11 @@ PY
         --output "$run/reward_${offset}"
     done
     ;;
-  *) echo 'Stage must be expert, demos, iq, or evaluate' >&2; exit 2;;
+  learning_progress)
+    [[ "$mode" == partial_obs ]] || { echo 'Learning curves require recurrent partial_obs snapshots.' >&2; exit 2; }
+    python -u -m analysis.evaluate_learning_progress \
+      --manifest "$run/checkpoints/manifest.json" --expert-model "$run/expert.zip" \
+      --episodes 20 --seed 10000 --output-dir "$run/learning_progress"
+    ;;
+  *) echo 'Stage must be expert, demos, iq, evaluate, or learning_progress'  >&2; exit 2;;
 esac

@@ -60,7 +60,7 @@ common=(--size 10 --num-distractors 0 --view-size "$fov")
 run_stage expert_train "$python_bin" -u -m experts.train_partial_obs "${common[@]}" \
     --timesteps 250000 --eval-episodes 100 --seed "$seed" --save-path "$run/expert"
 run_stage train_demos "$python_bin" -u -m imitation.generate_partial_obs_demos "${common[@]}" \
-    --model-path "$run/expert.zip" --num-episodes 400 --seed 100000 --out-path "$run/train.pkl"
+    --model-path "$run/expert.zip" --num-episodes 400 --seed 100000 --keep-all --out-path "$run/train.pkl"
 
 stage=heldout_seed
 heldout_seed=$("$python_bin" - "$run/train.pkl" <<'PY'
@@ -73,11 +73,22 @@ PY
 run_stage heldout_demos "$python_bin" -u -m imitation.generate_partial_obs_demos "${common[@]}" \
     --model-path "$run/expert.zip" --num-episodes 100 --seed "$heldout_seed" \
     --keep-all --out-path "$run/heldout.pkl"
+stage=validation_seed
+validation_seed=$("$python_bin" - "$run/heldout.pkl" <<'PYSEED'
+import pickle, sys
+with open(sys.argv[1], 'rb') as f:
+    data = pickle.load(f)
+print(data['seed_start'] + data['attempts'] + 1000)
+PYSEED
+)
+run_stage validation_demos "$python_bin" -u -m imitation.generate_partial_obs_demos "${common[@]}" \
+    --model-path "$run/expert.zip" --num-episodes 100 --seed "$validation_seed" \
+    --keep-all --out-path "$run/validation.pkl"
 run_stage iq_train "$python_bin" -u -m imitation.train_iq_recurrent "${common[@]}" \
-    --env partial_obs --demo-path "$run/train.pkl" --seed "$seed" \
+    --env partial_obs --demo-path "$run/train.pkl" --validation-demo-path "$run/validation.pkl" --checkpoint-dir "$run/checkpoints" --seed "$seed" \
     --grid-shape "$fov" "$fov" 3 --latent-dim 128 --rnn-hidden-dim 256 \
     --episodes-per-batch 32 --max-steps 200000 --eval-freq 3000 \
-    --patience 5 --min-delta 0.04 --plateau-eval-episodes 100 --eval-episodes 100 \
+    --patience 5 --min-delta 0.001 --eval-episodes 100 \
     --chi2-alpha 0.5 --init-temp 0.001 --gamma 0.99 --device cpu --save-path "$run/iq.pt"
 
 policy=(--checkpoint "$run/iq.pt" --init-temp 0.001 --gamma 0.99 --grid-shape "$fov" "$fov" 3)
@@ -88,5 +99,9 @@ run_stage alignment "$python_bin" -u -m analysis.evaluate_belief_alignment "${po
 run_stage reward_map "$python_bin" -u -m analysis.reward_maps "${policy[@]}" \
     --env partial_obs --size 10 --view-size "$fov" --seed 10000 --output "$run/reward"
 
-printf 'complete\n' > "$run/status.txt"
+run_stage learning_progress "$python_bin" -u -m analysis.evaluate_learning_progress \
+    --manifest "$run/checkpoints/manifest.json" --expert-model "$run/expert.zip" \
+    --episodes 20 --seed 10000 --output-dir "$run/learning_progress"
+
+printf 'complete\n'  > "$run/status.txt"
 echo "Complete. Reports: $run/likelihood.json and $run/alignment.json"
