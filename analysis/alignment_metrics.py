@@ -84,3 +84,51 @@ def summarize(rows):
                 resolved=group([r for r in rows if r['resolved']]),
                 by_candidate_count={str(n): group([r for r in rows if r['candidates'] == n])
                                     for n in sorted({r['candidates'] for r in rows})})
+
+
+def reward_action_alignment(values, executed_action, tolerance=1e-10):
+    """Compare the actual seven-action policy choice with reference reward Q."""
+    values = np.asarray(values, dtype=float)
+    if values.shape != (7,) or not np.isfinite(values).all():
+        raise ValueError('Need seven finite reference reward Q-values.')
+    if executed_action not in range(7):
+        raise ValueError('Executed action must be one of the seven MiniGrid actions.')
+    best = values.max()
+    winners = tuple(int(a) for a in np.flatnonzero(np.abs(values - best) <= tolerance))
+    return dict(argmax=winners[0], maximizers=winners,
+                tie=len(winners) > 1, all_tied=len(winners) == 7,
+                strict_agreement_unique_reward=(executed_action == winners[0]
+                                                if len(winners) == 1 else None),
+                q_in_reward_maximizers=executed_action in winners,
+                action_regret=float(best - values[executed_action]))
+
+
+def summarize_reward_alignment(rows, horizons):
+    """Step-weighted reward comparisons, with unique/tied-state denominators."""
+    def group(items, prefix):
+        unique = [r for r in items if not r[prefix + 'tie']]
+        informative = [r for r in items if not r[prefix + 'all_tied']]
+
+        def mean(key, subset):
+            return float(np.mean([r[prefix + key] for r in subset])) if subset else None
+
+        return dict(steps=len(items), episodes=len({r['episode'] for r in items}),
+                    unique_reward_steps=len(unique),
+                    unique_reward_episodes=len({r['episode'] for r in unique}),
+                    reward_tie_steps=len(items) - len(unique),
+                    all_reward_tied_steps=len(items) - len(informative),
+                    informative_reward_steps=len(informative),
+                    informative_reward_episodes=len({r['episode'] for r in informative}),
+                    strict_agreement_unique_reward=mean('strict_agreement_unique_reward', unique),
+                    q_in_reward_maximizers=mean('q_in_reward_maximizers', informative),
+                    mean_action_regret=mean('action_regret', items),
+                    mean_action_regret_informative=mean('action_regret', informative))
+
+    result = {}
+    for horizon in horizons:
+        prefix = f'reward_h{horizon}_'
+        result[str(horizon)] = dict(
+            overall=group(rows, prefix),
+            unresolved=group([r for r in rows if not r['resolved']], prefix),
+            resolved=group([r for r in rows if r['resolved']], prefix))
+    return result

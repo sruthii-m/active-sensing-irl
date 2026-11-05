@@ -9,7 +9,10 @@ import torch
 from environment import make_partial_obs_learning_env
 from analysis.discrete_goal_belief import DiscreteGoalBelief, select_action, ACTIONS
 from analysis.policy_io import add_policy_args, load_policy, representation
-from analysis.alignment_metrics import action_alignment, summarize
+from analysis.alignment_metrics import (
+    action_alignment, reward_action_alignment, summarize, summarize_reward_alignment,
+)
+from analysis.belief_reward_planner import BeliefRewardPlanner
 
 
 def main():
@@ -20,15 +23,23 @@ def main():
     parser.add_argument('--episodes', type=int, default=20)
     parser.add_argument('--seed', type=int, default=10000)
     parser.add_argument('--max-steps', type=int)
+    parser.add_argument('--reward-horizons', type=int, nargs='+',
+                        help='Also compare with Bayesian task-reward planning at these positive action horizons.')
     parser.add_argument('--output', default='artifacts/analysis/alignment.csv')
     args = parser.parse_args()
     if args.episodes < 1:
         parser.error('--episodes must be positive')
+    horizons = args.reward_horizons or []
+    if any(h < 1 for h in horizons) or len(set(horizons)) != len(horizons):
+        parser.error('--reward-horizons must contain distinct positive integers')
     env = make_partial_obs_learning_env(size=args.size, num_distractors=0,
                                         agent_view_size=args.view_size, max_steps=args.max_steps)
     agent = load_policy(args, env.observation_space.shape[0])
     if not hasattr(agent, 'encoder'):
         raise ValueError('Alignment requires a recurrent partial-observation checkpoint.')
+    planner = (BeliefRewardPlanner(size=args.size, view_size=args.view_size,
+                                  max_steps=env.unwrapped.max_steps, gamma=args.gamma)
+               if horizons else None)
     rows, successes = [], 0
     with torch.no_grad():
         for episode in range(args.episodes):
@@ -58,6 +69,18 @@ def main():
                 for a in ACTIONS:
                     row[f'ig_{a}'] = scores[a]
                     row[f'new_cells_{a}'] = json.dumps(sorted(new[a]))
+                if planner is not None:
+                    row['belief_candidates'] = json.dumps(sorted(belief.candidates))
+                    pose = (row['agent_x'], row['agent_y'], row['direction'])
+                    for horizon in horizons:
+                        values = planner.q_values(pose, belief.candidates,
+                                                  env.unwrapped.step_count, horizon)
+                        metrics = reward_action_alignment(values, reward_action)
+                        prefix = f'reward_h{horizon}_'
+                        for key, value in metrics.items():
+                            row[prefix + key] = json.dumps(value) if key == 'maximizers' else value
+                        for a, value in enumerate(values):
+                            row[f'{prefix}q_{a}'] = float(value)
                 rows.append(row)
                 obs, reward, terminated, truncated, _ = env.step(reward_action)
                 done = terminated or truncated
@@ -73,6 +96,14 @@ def main():
     summary = dict(schema_version=2,
                    primary_metric='unresolved.strict_agreement_unique_ig',
                    config=vars(args), success_rate=successes / args.episodes, **summarize(rows))
+    if planner is not None:
+        summary['reward_planning'] = dict(
+            horizons=horizons, gamma=planner.gamma, max_steps=planner.max_steps,
+            tie_tolerance=1e-10, action_space=list(range(7)),
+            objective='Expected discounted MiniGrid goal-entry reward (1 - 0.9 * arrival_step / max_steps); no information-gain bonus.',
+            approximation='Exact recursion within each finite horizon; zero continuation value beyond horizon. Known empty geometry and pose; only the observed goal posterior is supplied, not the hidden goal.',
+            aggregation='Step-weighted means within overall, unresolved, and resolved groups. Unique-winner agreement excludes all ties; maximizer membership and informative regret exclude states tied across all seven actions. Empty denominators are null.',
+            by_horizon=summarize_reward_alignment(rows, horizons))
     out.with_suffix('.json').write_text(json.dumps(summary, indent=2, allow_nan=False))
     print(json.dumps(summary, indent=2, allow_nan=False))
 

@@ -51,6 +51,7 @@ def plot_training_curves(
     title: str | None = None,
     smoothing_window: int = 1,
     columns: int = 2,
+    x_label: str = "training timestep",
 ) -> Path:
     """Save one panel per named scalar curve and return the output path.
 
@@ -85,7 +86,7 @@ def plot_training_curves(
         x, y = _series_points(series, steps)
         axis.plot(x, _moving_average(y, smoothing_window), linewidth=2)
         axis.set_title(name)
-        axis.set_xlabel("training timestep")
+        axis.set_xlabel(x_label)
         axis.set_ylabel(name.rsplit("/", maxsplit=1)[-1].replace("_", " "))
         axis.grid(alpha=0.3)
     for axis in list(axes.flat)[num_curves:]:
