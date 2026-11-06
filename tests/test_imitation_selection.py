@@ -22,13 +22,157 @@ def episode(value, length=2):
             torch.zeros(length, 1), torch.arange(length).float())
 
 
-def write_demos(path, episodes):
+def write_demos(path, episodes, **metadata):
     data = {key: [ep[index].numpy().reshape(-1) if index >= 2 else ep[index].numpy()
                   for ep in episodes]
             for key, index in [('states', 0), ('next_states', 1), ('actions', 2),
                                ('dones', 3), ('rewards', 4)]}
+    data.update(metadata)
     path.write_bytes(pickle.dumps(data))
     return data
+
+
+def provenance(seed, count=2, **overrides):
+    result = dict(seed_start=seed, attempts=count, selection='all',
+                  expert_model='expert.zip', deterministic=True,
+                  env_kwargs=dict(size=10, num_distractors=0, agent_view_size=3))
+    result.update(overrides)
+    return result
+
+
+class ExplicitValidationProvenanceTests(unittest.TestCase):
+    def test_disjoint_generation_retains_repeated_trajectories_and_audits_counts(self):
+        with tempfile.TemporaryDirectory() as root:
+            train_path, valid_path = Path(root) / 'train.pkl', Path(root) / 'valid.pkl'
+            write_demos(train_path, [episode(0), episode(1), episode(1)], **provenance(100000, 3))
+            write_demos(valid_path, [episode(1), episode(1), episode(2)], **provenance(102500, 3))
+            audit = {}
+            with self.assertWarnsRegex(UserWarning, '2/3 validation episodes'):
+                train, valid, ti, vi = selection.load_training_validation(
+                    str(train_path), str(valid_path), .2, 0, 'cpu', split_audit=audit)
+            self.assertEqual((len(train), len(valid)), (3, 3))
+            self.assertEqual((ti, vi), ([0, 1, 2], [0, 1, 2]))
+            self.assertEqual(audit['shared_trajectory_groups'], 1)
+            self.assertEqual(audit['train_episodes_matching_validation'], 2)
+            self.assertEqual(audit['validation_episodes_matching_training'], 2)
+            self.assertEqual(audit['provenance']['train_seed_range'], [100000, 100002])
+            self.assertEqual(audit['provenance']['validation_seed_range'], [102500, 102502])
+            self.assertEqual(audit['provenance']['status'], 'compatible_disjoint_seed_ranges')
+            self.assertTrue(audit['repeated_trajectories_allowed'])
+            self.assertEqual(audit['layout_disjointness'], 'not_established')
+            json.dumps(audit, allow_nan=False)
+
+    def test_same_file_and_symlink_are_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            train_path = Path(root) / 'train.pkl'
+            write_demos(train_path, [episode(0), episode(1)], **provenance(100))
+            alias = Path(root) / 'alias.pkl'
+            alias.symlink_to(train_path)
+            for valid_path in (train_path, alias):
+                with self.subTest(path=valid_path), self.assertRaisesRegex(ValueError, 'same file'):
+                    selection.load_training_validation(str(train_path), str(valid_path), .2, 0, 'cpu')
+
+    def test_overlapping_reset_ranges_fail_even_without_matching_trajectories(self):
+        with tempfile.TemporaryDirectory() as root:
+            train_path, valid_path = Path(root) / 'train.pkl', Path(root) / 'valid.pkl'
+            write_demos(train_path, [episode(0), episode(1)], **provenance(100))
+            for seed in (99, 100, 101):
+                write_demos(valid_path, [episode(2), episode(3)], **provenance(seed))
+                with self.subTest(seed=seed), self.assertRaisesRegex(ValueError, 'seed ranges overlap'):
+                    selection.load_training_validation(str(train_path), str(valid_path), .2, 0, 'cpu')
+
+    def test_adjacent_reset_ranges_are_disjoint(self):
+        with tempfile.TemporaryDirectory() as root:
+            train_path, valid_path = Path(root) / 'train.pkl', Path(root) / 'valid.pkl'
+            write_demos(train_path, [episode(0), episode(1)], **provenance(100))
+            write_demos(valid_path, [episode(2), episode(3)], **provenance(102))
+            audit = {}
+            selection.load_training_validation(str(train_path), str(valid_path), .2, 0, 'cpu', split_audit=audit)
+            self.assertTrue(audit['provenance']['seed_ranges_disjoint'])
+            self.assertEqual(audit['shared_trajectory_groups'], 0)
+
+    def test_copied_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            train_path, valid_path = Path(root) / 'train.pkl', Path(root) / 'valid.pkl'
+            write_demos(train_path, [episode(0), episode(1)], **provenance(100))
+            valid_path.write_bytes(train_path.read_bytes())
+            with self.assertRaisesRegex(ValueError, 'seed ranges overlap'):
+                selection.load_training_validation(str(train_path), str(valid_path), .2, 0, 'cpu')
+
+    def test_filtered_attempt_ranges_include_discarded_episodes(self):
+        with tempfile.TemporaryDirectory() as root:
+            train_path, valid_path = Path(root) / 'train.pkl', Path(root) / 'valid.pkl'
+            write_demos(train_path, [episode(0), episode(1)],
+                        **provenance(100, 10, selection='successful_filtered'))
+            write_demos(valid_path, [episode(2), episode(3)],
+                        **provenance(105, selection='successful_filtered'))
+            with self.assertRaisesRegex(ValueError, 'seed ranges overlap'):
+                selection.load_training_validation(str(train_path), str(valid_path), .2, 0, 'cpu')
+
+    def test_incomplete_provenance_cannot_exempt_repeated_trajectories(self):
+        with tempfile.TemporaryDirectory() as root:
+            train_path, valid_path = Path(root) / 'train.pkl', Path(root) / 'valid.pkl'
+            write_demos(train_path, [episode(0), episode(1)], **provenance(100))
+            for key in provenance(200):
+                metadata = provenance(200)
+                del metadata[key]
+                write_demos(valid_path, [episode(1), episode(2)], **metadata)
+                with self.subTest(missing=key), self.assertRaisesRegex(ValueError, 'identical trajectories'):
+                    selection.load_training_validation(str(train_path), str(valid_path), .2, 0, 'cpu')
+
+    def test_incompatible_generation_conditions_are_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            train_path, valid_path = Path(root) / 'train.pkl', Path(root) / 'valid.pkl'
+            write_demos(train_path, [episode(0), episode(1)], **provenance(100))
+            for key, value in [('env_kwargs', dict(size=8)), ('expert_model', 'other.zip'),
+                               ('deterministic', False), ('selection', 'successful_filtered')]:
+                write_demos(valid_path, [episode(2), episode(3)], **provenance(200, **{key: value}))
+                with self.subTest(field=key), self.assertRaisesRegex(ValueError, key + ' differs'):
+                    selection.load_training_validation(str(train_path), str(valid_path), .2, 0, 'cpu')
+
+    def test_invalid_seed_and_attempt_metadata_fail_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            train_path, valid_path = Path(root) / 'train.pkl', Path(root) / 'valid.pkl'
+            write_demos(train_path, [episode(0), episode(1)], **provenance(100))
+            for key, value in [('seed_start', -1), ('seed_start', True), ('seed_start', 200.),
+                               ('attempts', 0), ('attempts', 1), ('attempts', 3), ('attempts', False)]:
+                write_demos(valid_path, [episode(1), episode(2)], **provenance(200, **{key: value}))
+                with self.subTest(field=key, value=value), self.assertRaisesRegex(ValueError, 'Invalid demonstration provenance'):
+                    selection.load_training_validation(str(train_path), str(valid_path), .2, 0, 'cpu')
+
+    def test_legacy_distinct_files_still_work_but_provenance_is_unverified(self):
+        with tempfile.TemporaryDirectory() as root:
+            train_path, valid_path = Path(root) / 'train.pkl', Path(root) / 'valid.pkl'
+            write_demos(train_path, [episode(0), episode(1)])
+            write_demos(valid_path, [episode(2), episode(3)])
+            audit = {}
+            selection.load_training_validation(str(train_path), str(valid_path), .2, 0, 'cpu', split_audit=audit)
+            self.assertEqual(audit['provenance']['status'], 'unverified')
+            self.assertFalse(audit['repeated_trajectories_allowed'])
+
+    def test_both_trainers_record_explicit_split_audit_without_changing_selection(self):
+        for module in (trainer, full_trainer):
+            with self.subTest(trainer=module.__name__), tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                train_path, valid_path = root / 'train.pkl', root / 'valid.pkl'
+                write_demos(train_path, [episode(0), episode(1)], **provenance(100))
+                write_demos(valid_path, [episode(1), episode(2)], **provenance(200))
+                checkpoint = root / 'iq.pt'
+                argv = ['train', '--demo-path', str(train_path), '--validation-demo-path', str(valid_path),
+                        '--save-path', str(checkpoint), '--max-steps', '1', '--eval-freq', '1', '--init-temp', '.5']
+                if module is trainer:
+                    argv += ['--env', 'partial_obs', '--device', 'cpu', '--latent-dim', '4',
+                             '--rnn-hidden-dim', '4', '--checkpoint-dir', str(root / 'checkpoints')]
+                with patch('sys.argv', argv), patch.object(module, 'evaluate_policy_success_rate', return_value=0.), contextlib.redirect_stdout(io.StringIO()), self.assertWarns(UserWarning):
+                    module.main()
+                metadata = json.loads(Path(str(checkpoint) + '.selection.json').read_text())
+                self.assertEqual(metadata['split_audit']['shared_trajectory_groups'], 1)
+                self.assertEqual(metadata['split_audit']['validation_episodes_matching_training'], 1)
+                self.assertEqual(metadata['metric'], 'episode_mean_nll')
+                self.assertEqual(metadata['best_validation_nll'], min(r['episode_mean_nll'] for r in metadata['evaluations']))
+                if module is trainer:
+                    manifest = json.loads((root / 'checkpoints' / 'manifest.json').read_text())
+                    self.assertEqual(manifest['split_audit'], metadata['split_audit'])
 
 
 class SelectionTests(unittest.TestCase):
@@ -104,6 +248,8 @@ class SelectionTests(unittest.TestCase):
                 trainer.main()
             success.assert_called_once()
             result = json.loads(Path(str(checkpoint) + '.selection.json').read_text())
+            self.assertEqual(result['split_audit']['strategy'], 'grouped_trajectory_holdout')
+            self.assertEqual(result['split_audit']['shared_trajectory_groups'], 0)
             self.assertEqual([x['step'] for x in result['evaluations']], [0, 2])
             manifest = json.loads((root / 'checkpoints' / 'manifest.json').read_text())
             self.assertEqual(manifest['evaluations'], result['evaluations'])

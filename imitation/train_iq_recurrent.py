@@ -93,8 +93,10 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
+    split_audit = {}
     episodes, validation, train_indices, validation_indices = load_training_validation(
-        args.demo_path, args.validation_demo_path, args.validation_fraction, args.seed, device
+        args.demo_path, args.validation_demo_path, args.validation_fraction, args.seed, device,
+        split_audit=split_audit,
     )
     print(f'Training episodes: {len(episodes)}; validation episodes: {len(validation)} (never used for gradient updates).')
     obs_dim = episodes[0][0].shape[1]
@@ -118,7 +120,8 @@ def main():
     selection = dict(config=vars(args), metric='episode_mean_nll', units='nats',
                      demo_sha256=hashlib.sha256(Path(args.demo_path).read_bytes()).hexdigest(),
                      validation_sha256=hashlib.sha256(Path(args.validation_demo_path or args.demo_path).read_bytes()).hexdigest(),
-                     train_indices=train_indices, validation_indices=validation_indices, evaluations=[])
+                     train_indices=train_indices, validation_indices=validation_indices,
+                     split_audit=split_audit, evaluations=[])
 
     def validate(step):
         nonlocal best_state, best_step

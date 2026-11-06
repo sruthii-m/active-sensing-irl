@@ -95,13 +95,14 @@ policy=(--checkpoint "$run/iq.pt" --init-temp 0.001 --gamma 0.99 --grid-shape "$
 run_stage likelihood "$python_bin" -u -m analysis.expert_likelihood "${policy[@]}" \
     --expert-model "$run/expert.zip" --heldout-demos "$run/heldout.pkl" --output "$run/likelihood.json"
 run_stage alignment "$python_bin" -u -m analysis.evaluate_belief_alignment "${policy[@]}" \
-    --size 10 --view-size "$fov" --episodes 100 --seed 10000 --output "$run/alignment.csv"
+    --size 10 --view-size "$fov" --episodes 100 --seed 10000 \
+    --reward-horizons 3 5 --output "$run/alignment.csv"
 run_stage reward_map "$python_bin" -u -m analysis.reward_maps "${policy[@]}" \
     --env partial_obs --size 10 --view-size "$fov" --seed 10000 --output "$run/reward"
 
 run_stage learning_progress "$python_bin" -u -m analysis.evaluate_learning_progress \
     --manifest "$run/checkpoints/manifest.json" --expert-model "$run/expert.zip" \
-    --episodes 20 --seed 10000 --output-dir "$run/learning_progress"
+    --episodes 20 --seed 900000 --output-dir "$run/learning_progress"
 
 printf 'complete\n'  > "$run/status.txt"
 echo "Complete. Reports: $run/likelihood.json and $run/alignment.json"

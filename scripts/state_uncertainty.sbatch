@@ -85,7 +85,8 @@ PYSEED
         --init-temp 0.001 --gamma 0.99 --save-path "$run/iq.pt"
     else
       python -u -m imitation.train_iq_full_state "${common[@]}" \
-        --demo-path "$run/train.pkl" --seed "$seed" --steps 20000 \
+        --demo-path "$run/train.pkl" --validation-demo-path "$run/validation.pkl" \
+        --seed "$seed" --steps 20000 --eval-freq 2000 --patience 5 --min-delta 0.001 \
         --eval-episodes 100 --init-temp 0.001 --gamma 0.99 --save-path "$run/iq.pt"
     fi
     ;;
@@ -101,7 +102,7 @@ PYSEED
     if [[ "$mode" == partial_obs ]]; then
       python -u -m analysis.evaluate_belief_alignment "${policy[@]}" \
         --view-size "$fov" --episodes 100 --seed "$eval_seed" \
-        --output "$run/alignment.csv"
+        --reward-horizons 3 5 --output "$run/alignment.csv"
     fi
     for offset in 0 1 2; do
       python -u -m analysis.reward_maps "${policy[@]}" --env "$mode" \
@@ -113,7 +114,7 @@ PYSEED
     [[ "$mode" == partial_obs ]] || { echo 'Learning curves require recurrent partial_obs snapshots.' >&2; exit 2; }
     python -u -m analysis.evaluate_learning_progress \
       --manifest "$run/checkpoints/manifest.json" --expert-model "$run/expert.zip" \
-      --episodes 20 --seed 10000 --output-dir "$run/learning_progress"
+      --episodes 20 --seed 900000 --output-dir "$run/learning_progress"
     ;;
   *) echo 'Stage must be expert, demos, iq, evaluate, or learning_progress'  >&2; exit 2;;
 esac

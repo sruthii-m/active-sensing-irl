@@ -11,6 +11,7 @@ policy_seed=${1:-0}
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 out=${2:-artifacts/matched_validation/fov3_seed${policy_seed}}
 checkpoint=${CHECKPOINT:-artifacts/state_uncertainty/partial_obs_fov3_seed${policy_seed}_local/iq.pt}
+[[ -f "$checkpoint" ]] || { echo "Missing checkpoint: $checkpoint" >&2; exit 2; }
 [[ ! -e "$out" ]] || { echo "Choose a new output root: $out" >&2; exit 2; }
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export MPLCONFIGDIR="${TMPDIR:-/tmp}/active-sensing-mpl"
@@ -20,3 +21,5 @@ export MPLCONFIGDIR="${TMPDIR:-/tmp}/active-sensing-mpl"
     --output-dir "$out/histories"
 "${PYTHON:-python}" -u -m analysis.validate_matched_histories \
     --histories "$out/histories" --output-dir "$out/comparison"
+"${PYTHON:-python}" -u -m analysis.evaluate_belief_reward \
+    --sources "$out/histories" --horizons 3 5 --output-dir "$out/reward_planning"

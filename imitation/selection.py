@@ -2,7 +2,9 @@
 
 from dataclasses import dataclass
 import hashlib
+from pathlib import Path
 import pickle
+import warnings
 
 import numpy as np
 import torch
@@ -11,6 +13,10 @@ import torch
 def load_episodes(demo_path: str, device: str):
     with open(demo_path, "rb") as f:
         data = pickle.load(f)
+    return _episodes_from_data(data, device)
+
+
+def _episodes_from_data(data, device):
     episodes = []
     for states, next_states, actions, rewards, dones in zip(
         data["states"], data["next_states"], data["actions"], data["rewards"], data["dones"], strict=True
@@ -54,21 +60,111 @@ def validation_split(episodes, fraction, seed):
     return train, valid
 
 
-def load_training_validation(demo_path, validation_demo_path, validation_fraction, seed, device):
-    all_episodes = load_episodes(demo_path, device)
+def _generation_range(data):
+    """Inclusive reset-seed interval, including discarded generation attempts."""
+    for key in ('seed_start', 'attempts'):
+        if key in data:
+            value = data[key]
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+                raise ValueError(f'Invalid demonstration provenance: {key} must be an integer.')
+            if value < (1 if key == 'attempts' else 0):
+                raise ValueError(f'Invalid demonstration provenance: {key} is out of range.')
+    if 'attempts' in data:
+        if data['attempts'] < len(data['states']):
+            raise ValueError('Invalid demonstration provenance: fewer attempts than episodes.')
+        if data.get('selection') == 'all' and data['attempts'] != len(data['states']):
+            raise ValueError('Invalid demonstration provenance: unfiltered attempts must equal episodes.')
+    if 'seed_start' not in data or 'attempts' not in data:
+        return None
+    start = int(data['seed_start'])
+    return [start, start + int(data['attempts']) - 1]
+
+
+def _validation_provenance(training_data, validation_data):
+    train_range, valid_range = map(_generation_range, (training_data, validation_data))
+    disjoint = None
+    if train_range is not None and valid_range is not None:
+        disjoint = train_range[1] < valid_range[0] or valid_range[1] < train_range[0]
+        if not disjoint:
+            raise ValueError('Training and validation generation seed ranges overlap.')
+    fields = ('env_kwargs', 'expert_model', 'deterministic', 'selection')
+    for key in fields:
+        if key in training_data and key in validation_data and training_data[key] != validation_data[key]:
+            raise ValueError(f'Incompatible training/validation generation provenance: {key} differs.')
+
+    def missing(data):
+        absent = [key for key in ('seed_start', 'attempts', *fields) if key not in data]
+        for key, valid in (
+            ('env_kwargs', isinstance(data.get('env_kwargs'), dict)),
+            ('expert_model', isinstance(data.get('expert_model'), str) and bool(data.get('expert_model'))),
+            ('deterministic', isinstance(data.get('deterministic'), bool)),
+            ('selection', data.get('selection') in ('all', 'successful_filtered')),
+        ):
+            if not valid and key not in absent:
+                absent.append(key)
+        return sorted(absent)
+
+    missing_train, missing_valid = missing(training_data), missing(validation_data)
+    compatible = disjoint is True and not missing_train and not missing_valid
+    return dict(status='compatible_disjoint_seed_ranges' if compatible else 'unverified',
+                train_seed_range=train_range, validation_seed_range=valid_range,
+                seed_ranges_disjoint=disjoint, missing_or_invalid_train_fields=missing_train,
+                missing_or_invalid_validation_fields=missing_valid)
+
+
+def load_training_validation(demo_path, validation_demo_path, validation_fraction, seed, device,
+                             *, split_audit=None):
+    """Load training/validation episodes, auditing files without deduplicating.
+
+    Repeated observed trajectories are allowed only with complete, compatible,
+    disjoint recorded generation provenance. Metadata is not independent proof
+    of generation or layout independence. Legacy files retain strict checking.
+    ``split_audit``, when supplied, receives JSON-serializable diagnostics.
+    """
     if validation_demo_path:
-        validation = load_episodes(validation_demo_path, device)
-        if {episode_fingerprint(ep) for ep in all_episodes} & {episode_fingerprint(ep) for ep in validation}:
-            raise ValueError('Training and validation contain identical trajectories.')
+        if Path(demo_path).samefile(validation_demo_path):
+            raise ValueError('Training and validation must not use the same file.')
+        with open(demo_path, 'rb') as stream:
+            training_data = pickle.load(stream)
+        with open(validation_demo_path, 'rb') as stream:
+            validation_data = pickle.load(stream)
+        provenance = _validation_provenance(training_data, validation_data)
+        all_episodes = _episodes_from_data(training_data, device)
+        validation = _episodes_from_data(validation_data, device)
         episodes = all_episodes
         train_indices = list(range(len(episodes)))
         validation_indices = list(range(len(validation)))
     else:
+        all_episodes = load_episodes(demo_path, device)
         train_indices, validation_indices = validation_split(all_episodes, validation_fraction, seed)
         episodes = [all_episodes[i] for i in train_indices]
         validation = [all_episodes[i] for i in validation_indices]
+        provenance = dict(status='grouped_trajectory_holdout')
     if any(ep[0].shape[1:] != episodes[0][0].shape[1:] for ep in validation):
         raise ValueError('Validation observation shape does not match training data.')
+    train_keys = [episode_fingerprint(ep) for ep in episodes]
+    valid_keys = [episode_fingerprint(ep) for ep in validation]
+    shared = set(train_keys) & set(valid_keys)
+    report = dict(strategy='explicit_validation' if validation_demo_path else 'grouped_trajectory_holdout',
+                  provenance=provenance, train_episodes=len(episodes), validation_episodes=len(validation),
+                  unique_train_trajectories=len(set(train_keys)), unique_validation_trajectories=len(set(valid_keys)),
+                  shared_trajectory_groups=len(shared),
+                  train_episodes_matching_validation=sum(key in shared for key in train_keys),
+                  validation_episodes_matching_training=sum(key in shared for key in valid_keys),
+                  repeated_trajectories_allowed=bool(shared), layout_disjointness='not_established')
+    if shared:
+        if provenance['status'] != 'compatible_disjoint_seed_ranges':
+            raise ValueError('Training and validation contain identical trajectories. '
+                             'Complete matching generation provenance with disjoint reset-seed ranges '
+                             'is required to accept independently sampled repetitions.')
+        warnings.warn(
+            f'Training and validation share {len(shared)} observed trajectory groups '
+            f'({report["validation_episodes_matching_training"]}/{len(validation)} validation episodes). '
+            'Retaining all episodes because recorded generation provenance is compatible and seed ranges '
+            'are disjoint. This does not establish disjoint layouts or independently verify provenance.',
+            UserWarning, stacklevel=2)
+    if split_audit is not None:
+        split_audit.update(report)
     return episodes, validation, train_indices, validation_indices
 
 
