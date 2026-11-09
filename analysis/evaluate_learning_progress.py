@@ -15,7 +15,7 @@ from analysis.training_curves import plot_training_curves
 
 
 def evaluation_commands(config, checkpoint, demos, output, episodes, seed, expert=None,
-                        reward_horizons=(3, 5)):
+                        reward_horizons=(3, 5), information_value=False):
     policy = ['--checkpoint', str(checkpoint), '--init-temp', str(config['init_temp']),
               '--gamma', str(config['gamma'])]
     if config.get('grid_shape'):
@@ -29,6 +29,8 @@ def evaluation_commands(config, checkpoint, demos, output, episodes, seed, exper
                  '--episodes', str(episodes), '--seed', str(seed),
                  '--reward-horizons', *map(str, reward_horizons),
                  '--output', str(output / 'alignment.csv')]
+    if information_value:
+        alignment += ['--information-value']
     # Recurrent trainer max_steps is a gradient-update cap, not an episode limit.
     if config.get('env_max_steps') is not None:
         alignment += ['--max-steps', str(config['env_max_steps'])]
@@ -53,6 +55,14 @@ def learning_curve_row(record, likelihood, alignment, horizons):
         for key in ('unique_reward_steps', 'unique_reward_episodes', 'reward_tie_steps',
                     'all_reward_tied_steps', 'informative_reward_steps', 'informative_reward_episodes'):
             row[f'{key}_h{horizon}'] = reference[key]
+    if 'information_value' in alignment:
+        for horizon in horizons:
+            result = alignment['information_value']['by_horizon'][str(horizon)]
+            for label, group in result['unresolved'].items():
+                for key in ('strict_ig_agreement', 'q_value_spearman', 'controlled_q_value_correlation'):
+                    row[f'{label}_{key}_h{horizon}'] = group[key]['mean']
+                    row[f'{label}_{key}_steps_h{horizon}'] = group[key]['steps']
+                row[f'{label}_excess_ig_agreement_h{horizon}'] = group['excess_ig_agreement']
     for key in ('mean_likelihood_gap', 'mean_kl_expert_to_iq', 'greedy_policy_agreement'):
         row[key] = likelihood.get('paired', {}).get(key)
     return row
@@ -61,6 +71,8 @@ def learning_curve_row(record, likelihood, alignment, horizons):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest', required=True)
+    parser.add_argument('--checkpoint-dir', help='Local snapshot directory when the manifest contains paths from another machine.')
+    parser.add_argument('--information-value', action='store_true', help='Also evaluate the value of future visual evidence.')
     parser.add_argument('--output-dir', required=True, help='New directory for diagnostic curves.')
     parser.add_argument('--expert-model', help='Optional recurrent expert for paired likelihood.')
     parser.add_argument('--validation-demos', help='Override validation file location; hash must match training manifest.')
@@ -85,6 +97,8 @@ def main():
     if args.episodes < 1 or not records:
         parser.error('Positive episode count and at least one snapshot required.')
     for record in records:
+        if args.checkpoint_dir:
+            record['checkpoint'] = str(Path(args.checkpoint_dir) / Path(record.get('checkpoint', '')).name)
         if not Path(record.get('checkpoint', '')).is_file():
             parser.error(f"Missing checkpoint for step {record['step']}.")
     out = Path(args.output_dir)
@@ -96,7 +110,7 @@ def main():
         destination = out / f"step_{record['step']:09d}"
         destination.mkdir()
         commands = evaluation_commands(config, record['checkpoint'], demos, destination,
-                                       args.episodes, args.seed, args.expert_model, args.reward_horizons)
+                                       args.episodes, args.seed, args.expert_model, args.reward_horizons, args.information_value)
         for name, command in zip(('likelihood', 'alignment'), commands):
             print(f"Step {record['step']}: {name}", flush=True)
             with (destination / f'{name}.log').open('w') as log:
@@ -112,6 +126,11 @@ def main():
     keys = ['validation_episode_nll', 'validation_action_accuracy']
     for horizon in args.reward_horizons:
         keys += [f'strict_reward_agreement_h{horizon}', f'reward_action_regret_informative_h{horizon}']
+    if args.information_value:
+        for horizon in args.reward_horizons:
+            for label in ('positive_visual_value', 'zero_visual_value'):
+                keys += [f'{label}_strict_ig_agreement_h{horizon}']
+            keys += [f'positive_visual_value_controlled_q_value_correlation_h{horizon}']
     keys += ['strict_ig_agreement', 'success_rate']
     curves = {key: [(r['step'], r[key]) for r in rows if r[key] is not None] for key in keys}
     plot_training_curves({k: v for k, v in curves.items() if v}, out / 'curves.png',

@@ -78,7 +78,7 @@ class BeliefRewardPlanner:
             return 0.
         return self.gamma ** (distance - 1) * (1 - .9 * (elapsed + distance) / self.max_steps)
 
-    def _action_value(self, pose, candidates, elapsed, horizon, action):
+    def _action_value(self, pose, candidates, elapsed, horizon, action, observe=True):
         if horizon <= 0 or elapsed >= self.max_steps:
             return 0.
         nxt = self.transition(pose, action)
@@ -90,21 +90,22 @@ class BeliefRewardPlanner:
             total += 1 - .9 * next_time / self.max_steps
             remaining.remove(cell)  # Goal entry terminates before continuation.
         if horizon > 1 and next_time < self.max_steps:
-            revealed = remaining & self.visibility[nxt]
+            revealed = remaining & self.visibility[nxt] if observe else set()
             for goal in revealed:
                 total += self.gamma * self.known_goal_value(nxt, self.cells[goal], next_time, horizon - 1)
             unseen = tuple(sorted(remaining - revealed))
             if unseen:
-                total += self.gamma * len(unseen) * self.value(nxt, unseen, next_time, horizon - 1)
+                total += self.gamma * len(unseen) * self.value(nxt, unseen, next_time, horizon - 1, observe)
         return total / len(candidates)
 
-    def _value(self, pose, candidates, elapsed, horizon):
+    def _value(self, pose, candidates, elapsed, horizon, observe=True):
         if len(candidates) == 1:
             return self.known_goal_value(pose, self.cells[candidates[0]], elapsed, horizon)
         # Actions 3..6 are identical no-ops in this environment.
-        return max(self._action_value(pose, candidates, elapsed, horizon, a) for a in range(4))
+        return max(self._action_value(pose, candidates, elapsed, horizon, a, observe) for a in range(4))
 
-    def q_values(self, pose, candidates, elapsed, horizon):
+    def q_values(self, pose, candidates, elapsed, horizon, observe=True):
+        """With observe=False, withhold future visual evidence, retaining goal-entry/survival feedback."""
         pose = tuple(int(v) for v in pose)
         candidates = tuple(sorted({self.index[tuple(p)] for p in candidates}))
         if not candidates or self.index.get(pose[:2]) in candidates:
@@ -113,7 +114,7 @@ class BeliefRewardPlanner:
             raise ValueError('Invalid pose.')
         if horizon < 1 or elapsed < 0:
             raise ValueError('Horizon must be positive and elapsed time nonnegative.')
-        values = [self._action_value(pose, candidates, elapsed, horizon, a) for a in range(4)]
+        values = [self._action_value(pose, candidates, elapsed, horizon, a, observe) for a in range(4)]
         return np.array(values[:3] + [values[3]] * 4)
 
 

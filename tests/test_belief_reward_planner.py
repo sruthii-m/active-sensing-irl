@@ -9,7 +9,7 @@ from environment.forage_env import make_forage_env
 from analysis.belief_reward_planner import BeliefRewardPlanner, maximizers
 
 
-def simulator_q(envs, horizon, gamma):
+def simulator_q(envs, horizon, gamma, observe=True):
     """Independent small belief tree, branching on actual simulator observations."""
     values = []
     for action in range(4):
@@ -19,11 +19,11 @@ def simulator_q(envs, horizon, gamma):
             obs, reward, terminated, truncated, _ = env.step(action)
             immediate += reward
             if not (terminated or truncated):
-                key = (obs['image'].tobytes(), obs['direction'])
+                key = (obs['image'].tobytes(), obs['direction']) if observe else 'survived'
                 branches.setdefault(key, []).append(env)
         continuation = 0.
         if horizon > 1:
-            continuation = sum(len(group) * max(simulator_q(group, horizon - 1, gamma))
+            continuation = sum(len(group) * max(simulator_q(group, horizon - 1, gamma, observe))
                                for group in branches.values())
         values.append((immediate + gamma * continuation) / len(envs))
     return np.array(values[:3] + [values[3]] * 4)
@@ -72,6 +72,9 @@ class BeliefRewardTest(unittest.TestCase):
             self.assertGreater(reference.max(), 0)
             self.assertGreater(np.ptp(reference), 0)
             np.testing.assert_allclose(p.q_values(pose, goals, 4, 4), reference, atol=1e-12)
+            blind = simulator_q(envs, 4, .9, observe=False)
+            np.testing.assert_allclose(p.q_values(pose, goals, 4, 4, observe=False), blind, atol=1e-12)
+            self.assertTrue(np.all(reference >= blind - 1e-12))
         finally:
             for env in envs:
                 env.close()
@@ -81,6 +84,47 @@ class BeliefRewardTest(unittest.TestCase):
         values = [p.q_values((2,2,0), [(1,1),(1,3)], 0, h).max() for h in range(1,6)]
         self.assertTrue(np.all(np.diff(values) >= -1e-12))
 
+    def test_known_goal_and_one_step_have_no_visual_information_value(self):
+        p = self.planner
+        for goals, horizon in [([(1,1)], 5), ([(1,1),(1,3)], 1)]:
+            np.testing.assert_allclose(p.q_values((2,2,0), goals, 0, horizon),
+                                      p.q_values((2,2,0), goals, 0, horizon, observe=False))
+
+    def test_visual_evidence_can_improve_future_reward(self):
+        p = self.planner
+        goals = [(1,1), (1,3)]
+        seen = p.q_values((2,2,0), goals, 0, 5)
+        blind = p.q_values((2,2,0), goals, 0, 5, observe=False)
+        self.assertTrue(np.all(seen >= blind - 1e-12))
+        self.assertGreater(float((seen-blind).max()), 1e-4)
+
 
 if __name__ == '__main__':
     unittest.main()
+
+class InformationValueMetricsTest(unittest.TestCase):
+    def test_no_information_value_has_no_alignment_or_correlation(self):
+        from analysis.alignment_metrics import information_value_alignment
+        v = np.arange(7, dtype=float)
+        r = information_value_alignment(v, v, v, np.zeros(7))
+        self.assertFalse(r['useful'])
+        self.assertIsNone(r['strict_agreement'])
+        self.assertIsNone(r['q_spearman'])
+        self.assertIsNone(r['controlled_q_correlation'])
+
+    def test_non_navigation_maximum_is_compared_to_all_actions(self):
+        from analysis.alignment_metrics import information_value_alignment
+        q = np.array([0.,0.,0.,0.,0.,0.,1.])
+        info = np.array([1.,0.,0.,0.,0.,0.,0.])
+        r = information_value_alignment(q, info, np.zeros(7), np.zeros(7))
+        self.assertFalse(r['strict_agreement'])
+        self.assertEqual(r['chosen_value'], 0.)
+
+    def test_resolved_group_excludes_ig_agreement(self):
+        from analysis.alignment_metrics import information_value_alignment, summarize_information_value
+        r = dict(episode=0, resolved=True, ig_tie=True, candidates=1)
+        r.update({'information_h3_'+k:v for k,v in information_value_alignment(
+            np.arange(7), np.zeros(7), np.zeros(7), np.zeros(7)).items()})
+        result = summarize_information_value([r], [3])['3']['resolved']
+        self.assertEqual(result['steps'], 1)
+        self.assertIsNone(result['strict_ig_agreement']['mean'])

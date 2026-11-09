@@ -132,3 +132,83 @@ def summarize_reward_alignment(rows, horizons):
             unresolved=group([r for r in rows if not r['resolved']], prefix),
             resolved=group([r for r in rows if r['resolved']], prefix))
     return result
+
+
+def information_value_alignment(q, informed, withheld, immediate, tolerance=1e-10):
+    """Visual evidence value conditional on a forced first action, over all seven actions."""
+    q, informed, withheld, immediate = map(lambda v: np.asarray(v, dtype=float),
+                                          (q, informed, withheld, immediate))
+    if any(v.shape != (7,) or not np.isfinite(v).all() for v in (q, informed, withheld, immediate)):
+        raise ValueError('Need seven finite action values for each comparator.')
+    value = informed - withheld
+    if value.min() < -tolerance:
+        raise ValueError('Access to visual evidence reduced optimal expected reward.')
+    value = np.maximum(value, 0.)
+    varying = np.ptp(value) > tolerance
+    winners = np.flatnonzero(np.abs(value - value.max()) <= tolerance)
+    # Conditional association: remove linear dependence on reward obtainable
+    # without vision and one-step reward. Seven actions only; diagnostic, not causal.
+    design = np.column_stack([np.ones(7), withheld, immediate])
+    residuals = [v - design @ np.linalg.lstsq(design, v, rcond=None)[0] for v in (q, value)]
+    partial = (float(np.corrcoef(*residuals)[0, 1])
+               if all(np.std(v) > tolerance for v in residuals) else None)
+    result = dict(max_value=float(value.max()), chosen_value=float(value[q.argmax()]),
+                  useful=bool(value.max() > tolerance), action_varying=bool(varying),
+                  unique_maximizer=len(winners) == 1,
+                  strict_agreement=bool(q.argmax() in winners) if len(winners) == 1 else None,
+                  q_spearman=rank_correlation(q, value) if varying else None,
+                  controlled_q_correlation=partial if varying else None)
+    result.update({f'value_{a}': float(v) for a, v in enumerate(value)})
+    result.update({f'withheld_q_{a}': float(v) for a, v in enumerate(withheld)})
+    return result
+
+
+def summarize_information_value(rows, horizons):
+    """Fixed uncertainty bins and episode-bootstrap intervals for descriptive associations."""
+    bins = [(2,3),(4,7),(8,15),(16,31),(32,63),(64,float('inf'))]
+
+    def estimate(items, key):
+        eligible = [r for r in items if r[key] is not None]
+        if not eligible:
+            return dict(mean=None, ci95=None, steps=0, episodes=0)
+        episodes = sorted({r['episode'] for r in eligible})
+        sums = np.array([sum(float(r[key]) for r in eligible if r['episode'] == e) for e in episodes])
+        counts = np.array([sum(r['episode'] == e for r in eligible) for e in episodes])
+        draws = np.random.default_rng(0).integers(len(episodes), size=(2000, len(episodes)))
+        boot = sums[draws].sum(1) / counts[draws].sum(1)
+        return dict(mean=float(sums.sum()/counts.sum()),
+                    ci95=np.quantile(boot,[.025,.975]).tolist() if len(episodes)>1 else None,
+                    steps=len(eligible), episodes=len(episodes))
+
+    def group(items, prefix):
+        unique_ig = [r for r in items if not r['resolved'] and not r['ig_tie']]
+        # Chance reference preserves actual/IG action frequencies within uncertainty bins.
+        expected = 0.
+        for low, high in bins:
+            subset = [r for r in unique_ig if low <= r['candidates'] <= high]
+            if subset:
+                expected += sum(sum(r['executed_action']==a for r in subset) *
+                                sum(r['ig_argmax']==a for r in subset) for a in range(7)) / len(subset)
+        baseline = expected/len(unique_ig) if unique_ig else None
+        agreement = estimate(unique_ig, 'strict_agreement')
+        return dict(steps=len(items), episodes=len({r['episode'] for r in items}),
+                    strict_ig_agreement=agreement,
+                    uncertainty_binned_action_frequency_reference=baseline,
+                    excess_ig_agreement=agreement['mean']-baseline if baseline is not None else None,
+                    max_information_value=estimate(items, prefix+'max_value'),
+                    strict_value_agreement=estimate(items, prefix+'strict_agreement'),
+                    q_value_spearman=estimate(items, prefix+'q_spearman'),
+                    controlled_q_value_correlation=estimate(items, prefix+'controlled_q_correlation'))
+
+    result = {}
+    for horizon in horizons:
+        prefix = f'information_h{horizon}_'
+        unresolved = [r for r in rows if not r['resolved']]
+        def split(items):
+            return {label: group([r for r in items if r[prefix+'useful'] == useful], prefix)
+                    for label, useful in [('positive_visual_value', True), ('zero_visual_value', False)]}
+        result[str(horizon)] = dict(
+            unresolved=split(unresolved), resolved=group([r for r in rows if r['resolved']], prefix),
+            by_candidate_count={f'{low}-{high if np.isfinite(high) else "plus"}': split(
+                [r for r in unresolved if low <= r['candidates'] <= high]) for low, high in bins})
+    return result
