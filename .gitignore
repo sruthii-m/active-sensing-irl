@@ -3,3 +3,7 @@ __pycache__/
 .venv/
 venv/
 artifacts/
+.venv-airl/
+build/
+*.egg-info/
+.cache/

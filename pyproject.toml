@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "active-sensing-bench"
+version = "0.1.0"
+description = "Shared full-state and exact-belief IRL benchmark"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24,<2", "torch>=2.2", "minigrid==3.1.0", "gymnasium>=0.29.1,<1.4", "stable-baselines3>=2.2.1,<3", "scipy>=1.10"]
+
+[tool.setuptools.packages.find]
+include = ["active_sensing_bench*", "airl_runner*"]
