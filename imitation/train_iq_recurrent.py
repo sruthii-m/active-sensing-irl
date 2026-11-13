@@ -70,6 +70,10 @@ def main():
     parser.add_argument("--target-update-freq", type=int, default=4)
     parser.add_argument("--latent-dim", type=int, default=64)
     parser.add_argument("--rnn-hidden-dim", type=int, default=128)
+    parser.add_argument('--action-history', action=argparse.BooleanOptionalAction, default=True,
+                        help='Feed the previous action to memory, with a reset token at t=0 (default).')
+    parser.add_argument('--terminal-semantics', choices=['intrinsic_horizon', 'recorded'], default='intrinsic_horizon',
+                        help='Zero bootstrap at the task deadline; recorded reproduces legacy demo masks.')
     parser.add_argument(
         "--grid-shape", type=int, nargs=3, default=None,
         help="H W C to reshape the leading part of obs into for a CNN front-end (e.g. 7 7 3 for partial_obs). Omit for a plain MLP encoder.",
@@ -97,6 +101,7 @@ def main():
     episodes, validation, train_indices, validation_indices = load_training_validation(
         args.demo_path, args.validation_demo_path, args.validation_fraction, args.seed, device,
         split_audit=split_audit,
+        terminal_semantics=args.terminal_semantics, horizon=4 * args.size ** 2,
     )
     print(f'Training episodes: {len(episodes)}; validation episodes: {len(validation)} (never used for gradient updates).')
     obs_dim = episodes[0][0].shape[1]
@@ -111,6 +116,8 @@ def main():
         device=device,
         lr=args.lr,
         grid_shape=tuple(args.grid_shape) if args.grid_shape else None,
+        condition_on_action=args.action_history,
+        terminal_semantics=split_audit['terminals']['training']['effective_semantics'],
     )
 
     rng = np.random.default_rng(args.seed)
@@ -171,7 +178,7 @@ def main():
     all_recovered, all_ground_truth = [], []
     with torch.no_grad():
         for states, next_states, actions, dones, rewards in episodes:
-            hiddens = agent.encode_episode(states, next_states)
+            hiddens = agent.encode_episode(states, next_states, actions)
             h_t, h_tp1 = hiddens[:-1], hiddens[1:]
             recovered = agent.critic(h_t, actions) - (1 - dones) * agent.gamma * agent.getV(h_tp1)
             all_recovered.append(recovered.squeeze(1).cpu().numpy())

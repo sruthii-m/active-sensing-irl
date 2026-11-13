@@ -30,7 +30,9 @@ import torch
 from minigrid.core.constants import OBJECT_TO_IDX
 
 from environment import make_partial_obs_learning_env
-from imitation.recurrent_iq_learn_agent import RecurrentOfflineSoftQAgent, make_args
+from analysis.policy_io import add_policy_args, load_policy
+from imitation.recurrent_iq_learn_agent import RecurrentOfflineSoftQAgent
+from environment.experiment_config import add_environment_args, environment_kwargs
 
 GOAL_IDX = OBJECT_TO_IDX["goal"]
 TURN_ACTIONS = {0, 1}  # MiniGrid Actions.left, Actions.right
@@ -120,11 +122,11 @@ def run_episode(agent: RecurrentOfflineSoftQAgent, env, device: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Step 4: active-sensing metrics.")
-    parser.add_argument("--checkpoint", required=True)
+    add_policy_args(parser)
+    add_environment_args(parser)
     parser.add_argument("--episodes", type=int, default=200)
-    parser.add_argument("--grid-shape", type=int, nargs=3, default=[7, 7, 3])
-    parser.add_argument("--latent-dim", type=int, default=128)
-    parser.add_argument("--rnn-hidden-dim", type=int, default=256)
+    parser.add_argument("--latent-dim", type=int, help="Deprecated; dimensions are read from the checkpoint.")
+    parser.add_argument("--rnn-hidden-dim", type=int, help="Deprecated; dimensions are read from the checkpoint.")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -132,18 +134,11 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    env = make_partial_obs_learning_env()
+    env = make_partial_obs_learning_env(**environment_kwargs(args))
     obs_dim = env.observation_space.shape[0]
-    agent = RecurrentOfflineSoftQAgent(
-        obs_dim=obs_dim,
-        action_dim=7,
-        args=make_args(),
-        latent_dim=args.latent_dim,
-        rnn_hidden_dim=args.rnn_hidden_dim,
-        device=device,
-        grid_shape=tuple(args.grid_shape),
-    )
-    agent.load(args.checkpoint)
+    agent = load_policy(args, obs_dim)
+    if not hasattr(agent, 'encoder'):
+        raise ValueError('Active-sensing metrics require a recurrent policy.')
 
     results = [run_episode(agent, env, device) for _ in range(args.episodes)]
     env.close()

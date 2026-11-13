@@ -47,15 +47,17 @@ def random_memory(data, args, seed):
     with torch.random.fork_rng():
         torch.manual_seed(seed)
         encoder = RecurrentEncoder(data['observation'].shape[1],
-                                   trained.gru.input_size, trained.rnn_hidden_dim,
-                                   trained.grid_shape).eval()
+                                   agent.config['latent_dim'], trained.rnn_hidden_dim,
+                                   trained.grid_shape, action_dim=trained.action_dim).eval()
     result = np.empty_like(data['hidden'])
     for episode in np.unique(data['episode']):
         hidden = None
+        previous_action = -1
         for i in np.flatnonzero(data['episode'] == episode):
             obs = torch.tensor(data['observation'][i:i+1], dtype=torch.float32)
-            hidden, _ = encoder(obs, hidden)
+            hidden, _ = encoder(obs, hidden, previous_action)
             result[i] = hidden.numpy()[0]
+            previous_action = int(data['action'][i])
     return result
 
 

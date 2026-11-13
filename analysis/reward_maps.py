@@ -1,8 +1,8 @@
 """History-conditioned counterfactual rewards, aggregated at visited poses.
 
 Each action branches the real simulator and the current recurrent history.
-Terminal bootstrap is zero; time-limit truncation still bootstraps, matching
-recorded demonstration dones and IQ loss. Unvisited cells remain missing.
+Terminal bootstrap follows the checkpoint's training convention, including
+the intrinsic deadline for new models. Unvisited cells remain missing.
 """
 import argparse
 from copy import deepcopy
@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 
 from environment import make_full_obs_learning_env, make_partial_obs_learning_env
 from analysis.policy_io import add_policy_args, load_policy, representation
+from imitation.episode_contract import task_terminal
 
 
 @torch.no_grad()
@@ -26,10 +27,14 @@ def counterfactual_rewards(agent, env, h):
     for action in range(env.action_space.n):
         branch = deepcopy(env)
         branch.unwrapped.render_mode = None
-        obs, _, terminated, _, _ = branch.step(action)
-        nxt = representation(agent, obs, h)
+        obs, _, terminated, truncated, _ = branch.step(action)
+        nxt = representation(agent, obs, h, action)
         value = agent.getV(nxt)[0, 0]
-        rewards.append(float(q[action] - agent.gamma * (not terminated) * value))
+        intrinsic = getattr(agent, 'config', {}).get('terminal_semantics') == 'intrinsic_horizon'
+        terminal = (task_terminal(terminated, truncated, branch.unwrapped.step_count, branch.unwrapped.max_steps)
+                    if intrinsic else terminated)
+        rewards.append(float(q[action] - agent.gamma * (not terminal) * value))
+        branch.close()
     return np.asarray(rewards)
 
 
@@ -52,10 +57,11 @@ def main():
     goal = next((x, y) for x in range(args.size) for y in range(args.size)
                 if (o := env.unwrapped.grid.get(x, y)) is not None and o.type == 'goal')
     hidden, done = None, False
+    previous_action = -1
     samples = []
     with torch.no_grad():
         while not done:
-            hidden = representation(agent, obs, hidden)
+            hidden = representation(agent, obs, hidden, previous_action)
             rewards = counterfactual_rewards(agent, env, hidden)
             x, y = env.unwrapped.agent_pos
             total[:, y, x] += rewards
@@ -63,6 +69,7 @@ def main():
             samples.append([int(x), int(y), int(env.unwrapped.agent_dir), *rewards.tolist()])
             action = int(agent.q_net(hidden).argmax())
             obs, _, terminated, truncated, _ = env.step(action)
+            previous_action = action
             done = terminated or truncated
     env.close()
     maps = np.full_like(total, np.nan)

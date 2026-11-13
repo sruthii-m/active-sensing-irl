@@ -49,7 +49,7 @@ Because multiple rewards can rationalize the same behavior, reward correlation a
 
 A recurrent PPO expert acts from the egocentric observation while carrying memory across the episode. Its successful trajectories are used to train a recurrent offline IQ-Learn agent.
 
-The IRL agent combines a jointly trained CNN or MLP observation encoder with a GRU. The recurrent hidden state summarizes observation history and serves as a learned belief-like state for the Q-network. This tests whether a useful reward and policy can be recovered when a single observation is not Markov.
+The IRL agent combines a jointly trained CNN or MLP observation encoder with a GRU. New recurrent training feeds the previous action alongside the encoded observation, with a distinct reset token at the first step. The hidden state summarizes observation/action history and serves as a learned belief-like state for the Q-network. This tests whether a useful reward and policy can be recovered when a single observation is not Markov.
 
 ### 3. Measure active sensing
 
@@ -200,6 +200,39 @@ python -m imitation.train_iq_recurrent \
   --grid-shape 7 7 3
 ```
 
+New recurrent runs default to `--action-history`: at time `t`, the GRU receives
+`(o_t, a_{t-1})`; the first observation receives reset token `-1`, encoded as a
+separate one-hot category. The current action is a prediction target, never an
+input to that prediction. The final next observation receives the final executed
+action. Training, validation likelihood, forced-history replay, counterfactual
+reward maps, and policy rollouts all use this convention. `--no-action-history`
+provides an observation-only ablation under the same terminal convention.
+
+Both IQ training entrypoints now default to `--terminal-semantics intrinsic_horizon`:
+success and the task deadline stop bootstrapping; an earlier collection cutoff
+does not. Legacy complete episodes are normalized in memory using their recorded
+environment horizon (or the configured `4 * size**2` deadline). Correction counts
+are saved in `split_audit.terminals`; original demonstration files are unchanged.
+New demos retain separate `terminated`, `truncated`, and `task_terminal` arrays,
+the task horizon, and accepted reset seeds. `dones` aliases `task_terminal`.
+Use `--terminal-semantics recorded` only to reproduce recorded legacy masks.
+
+Version 2 IQ checkpoints store architecture, temperature, discount, terminal
+semantics, and (for recurrent models) the action convention. Analysis loads old
+weight-only checkpoints as observation-only/recorded-mask models; it does not
+reinterpret them as the new condition. Legacy CNN checkpoints still require
+their original `--grid-shape`, and all analysis commands require the training
+`--init-temp`. Settings that conflict with new checkpoint metadata are rejected.
+
+These fixes establish a usable recurrent baseline; they do not establish that
+its hidden state is an exact belief or improve its measured performance without
+retraining. The image/heading input protocol is unchanged. Before comparing with
+the 71-dimensional benchmark or adding a Bayesian belief loss, explicitly match
+access to pose and time, demonstrations, action space, horizon, and budgets.
+The world-coordinate posterior currently used by probes is conditioned on known
+pose, which the image-only recurrent actor does not receive. IRC calibration
+remains a separate toy experiment, not part of this GRU training path.
+
 Run the analysis tests:
 
 ```bash
@@ -257,9 +290,9 @@ establish reward-identity ambiguity. Experiment B will need its own task design.
   outcome enumeration. Its API remains in **bits**; new reports convert to
   **nats**.
 - `analysis/alignment_metrics.py` measures action ordering, not equality of Q
-  and IG magnitudes. `analysis/policy_io.py` adapts existing checkpoint APIs
-  without changing training. The current GRU consumes **observations only**,
-  not previous actions; it is not literally an action-conditioned history model.
+  and IG magnitudes. `analysis/policy_io.py` loads the checkpoint's explicit
+  input convention: previous-action conditioning for new default runs, and
+  observation-only recurrence for legacy checkpoints.
 - `analysis/expert_likelihood.py` computes teacher-forced
   `mean_t log_softmax(Q(h_t)/alpha)[a_expert]`, resetting recurrence per episode.
   It also reports NLL, top-1 accuracy, policy entropy, per-episode log sums and
@@ -267,9 +300,10 @@ establish reward-identity ambiguity. Experiment B will need its own task design.
   likelihood, not normalized joint trajectory probability. Initial-state
   probability is omitted; recorded transitions are assumed valid/deterministic.
 - `analysis/reward_maps.py` evaluates every action from each visited history,
-  using `Q(h,a) - gamma*(1-terminated)*V(h'_a)` and the actual counterfactual
-  next observation. Truncations bootstrap, matching demonstration `dones` and
-  IQ loss. Maps average over sampled histories/directions at a cell, not over a
+  using `Q(h,a) - gamma*(1-task_terminal)*V(h'_a)` and the actual counterfactual
+  next observation and branch action. New intrinsic-horizon checkpoints stop
+  bootstrap at the deadline; legacy checkpoints retain terminated-only masks.
+  Maps average over sampled histories/directions at a cell, not over a
   unique recurrent state associated with that cell. They use the online Q/V
   network, as in existing post-training reward inference.
 

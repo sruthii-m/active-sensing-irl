@@ -57,10 +57,13 @@ class OfflineSoftQAgent:
     network, but built directly (no hydra.utils.instantiate) and with no
     dependence on an online policy replay buffer."""
 
-    def __init__(self, obs_dim: int, action_dim: int, args: SimpleNamespace, device: str = "cpu", lr: float = 3e-4):
+    def __init__(self, obs_dim: int, action_dim: int, args: SimpleNamespace, device: str = "cpu", lr: float = 3e-4,
+                 terminal_semantics: str = 'recorded'):
         self.args = args
         self.gamma = args.gamma
         self.device = torch.device(device)
+        self.config = dict(obs_dim=obs_dim, action_dim=action_dim, gamma=float(args.gamma),
+                           init_temp=float(args.agent.init_temp), terminal_semantics=terminal_semantics)
         self.log_alpha = torch.log(torch.tensor(float(args.agent.init_temp), device=self.device))
         self.q_net = SimpleQNetwork(obs_dim, action_dim, args, device=device).to(self.device)
         self.target_net = copy.deepcopy(self.q_net).to(self.device)
@@ -77,6 +80,9 @@ class OfflineSoftQAgent:
     def getV(self, obs: torch.Tensor) -> torch.Tensor:
         q = self.q_net(obs)
         return self.alpha * torch.logsumexp(q / self.alpha, dim=1, keepdim=True)
+
+    def q_values(self, obs: torch.Tensor) -> torch.Tensor:
+        return self.q_net(obs)
 
     def get_targetV(self, obs: torch.Tensor) -> torch.Tensor:
         q = self.target_net(obs)
@@ -128,9 +134,15 @@ class OfflineSoftQAgent:
         return loss_dict
 
     def save(self, path: str):
-        torch.save(self.q_net.state_dict(), path)
+        torch.save(dict(format_version=2, config=self.config, q_net=self.q_net.state_dict()), path)
 
     def load(self, path: str):
-        state = torch.load(path, map_location=self.device)
+        state = torch.load(path, map_location=self.device, weights_only=True)
+        if 'config' in state:
+            if state.get('format_version') != 2 or state['config'] != self.config:
+                raise ValueError('Checkpoint configuration differs from this agent.')
+            state = state['q_net']
+        elif self.config['terminal_semantics'] != 'recorded':
+            raise ValueError('Legacy checkpoints require recorded terminal semantics.')
         self.q_net.load_state_dict(state)
         self.target_net.load_state_dict(state)

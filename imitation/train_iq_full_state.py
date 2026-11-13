@@ -65,6 +65,8 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--init-temp", type=float, default=0.001)
+    parser.add_argument('--terminal-semantics', choices=['intrinsic_horizon', 'recorded'], default='intrinsic_horizon',
+                        help='Zero bootstrap at the task deadline; recorded reproduces legacy demo masks.')
     parser.add_argument("--target-update-freq", type=int, default=4)
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
@@ -82,6 +84,7 @@ def main():
     episodes, validation, train_indices, validation_indices = load_training_validation(
         args.demo_path, args.validation_demo_path, args.validation_fraction, args.seed, "cpu",
         split_audit=split_audit,
+        terminal_semantics=args.terminal_semantics, horizon=4 * args.size ** 2,
     )
     print(f'Training episodes: {len(episodes)}; validation episodes: {len(validation)} (never used for gradient updates).')
     obs_t, next_obs_t, actions_t, dones_t, rewards_t = (
@@ -94,6 +97,7 @@ def main():
         action_dim=7,
         args=make_args(gamma=args.gamma, init_temp=args.init_temp, critic_target_update_frequency=args.target_update_freq),
         lr=args.lr,
+        terminal_semantics=split_audit['terminals']['training']['effective_semantics'],
     )
 
     n = obs_t.shape[0]

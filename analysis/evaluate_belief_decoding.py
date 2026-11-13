@@ -56,9 +56,10 @@ def collect(args):
             layout = (*goal, *base.agent_pos, base.agent_dir)
             belief = DiscreteGoalBelief.from_env(env)
             hidden, done, step = None, False, 0
+            previous_action = -1
             while not done:
                 belief.observe(env)
-                hidden = representation(agent, obs, hidden)
+                hidden = representation(agent, obs, hidden, previous_action)
                 reset = representation(agent, obs, None)
                 action = int(agent.q_net(hidden).argmax(-1).item())
                 pose = np.r_[np.asarray(base.agent_pos) / (args.size - 1),
@@ -72,6 +73,7 @@ def collect(args):
                 for key, value in values.items():
                     rows[key].append(value)
                 obs, _, terminated, truncated, _ = env.step(action)
+                previous_action = action
                 done = terminated or truncated
                 step += 1
             if (episode + 1) % 50 == 0:

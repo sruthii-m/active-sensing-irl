@@ -31,23 +31,35 @@ class RecurrentOfflineSoftQAgent:
         device: str = "cpu",
         lr: float = 3e-4,
         grid_shape: tuple[int, int, int] | None = None,
+        condition_on_action: bool = True,
+        terminal_semantics: str = "recorded",
     ):
         self.args = args
         self.gamma = args.gamma
         self.device = torch.device(device)
         self.log_alpha = torch.log(torch.tensor(float(args.agent.init_temp), device=self.device))
-        self.encoder = RecurrentEncoder(obs_dim, latent_dim, rnn_hidden_dim, grid_shape=grid_shape).to(self.device)
+        self.config = dict(obs_dim=obs_dim, action_dim=action_dim, latent_dim=latent_dim,
+                           rnn_hidden_dim=rnn_hidden_dim, grid_shape=grid_shape,
+                           condition_on_action=condition_on_action, terminal_semantics=terminal_semantics,
+                           gamma=float(args.gamma), init_temp=float(args.agent.init_temp),
+                           action_convention='previous_action_reset_minus_one' if condition_on_action else 'observation_only')
+        self.encoder = RecurrentEncoder(obs_dim, latent_dim, rnn_hidden_dim, grid_shape=grid_shape,
+                                        action_dim=action_dim if condition_on_action else None).to(self.device)
         self.q_net = SimpleQNetwork(rnn_hidden_dim, action_dim, args, device=device).to(self.device)
         self.target_net = copy.deepcopy(self.q_net).to(self.device)
         self.optimizer = Adam(list(self.encoder.parameters()) + list(self.q_net.parameters()), lr=lr)
         self._hidden = None  # persistent hidden state for act() during a rollout
+        self._previous_action = None
 
     @property
     def alpha(self) -> torch.Tensor:
         return self.log_alpha.exp()
 
+    def q_values(self, h: torch.Tensor) -> torch.Tensor:
+        return self.q_net(h)
+
     def getV(self, h: torch.Tensor) -> torch.Tensor:
-        q = self.q_net(h)
+        q = self.q_values(h)
         return self.alpha * torch.logsumexp(q / self.alpha, dim=1, keepdim=True)
 
     def get_targetV(self, h: torch.Tensor) -> torch.Tensor:
@@ -55,19 +67,24 @@ class RecurrentOfflineSoftQAgent:
         return self.alpha * torch.logsumexp(q / self.alpha, dim=1, keepdim=True)
 
     def critic(self, h: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        q = self.q_net(h)
+        q = self.q_values(h)
         return q.gather(1, action.long())
 
-    def encode_episode(self, states: torch.Tensor, next_states: torch.Tensor) -> torch.Tensor:
+    def encode_episode(self, states: torch.Tensor, next_states: torch.Tensor, actions=None) -> torch.Tensor:
         """states/next_states: [T, obs_dim] for one episode. Returns [T+1, H]
         hiddens: hiddens[t] is the belief after states[t], hiddens[T] is the
         belief after the final next_states[-1] (reached but never acted from)."""
+        if len(states) == 0 or len(next_states) != len(states):
+            raise ValueError('Need a nonempty complete episode with matching states/next_states.')
+        if self.config['condition_on_action'] and (actions is None or len(actions) != len(states)):
+            raise ValueError('Action-conditioned episode encoding requires one action per transition.')
         hidden = None
         hiddens = []
         for t in range(states.shape[0]):
-            hidden, _ = self.encoder(states[t : t + 1], hidden)
+            previous = -1 if t == 0 else (actions[t - 1] if actions is not None else None)
+            hidden, _ = self.encoder(states[t : t + 1], hidden, previous)
             hiddens.append(hidden)
-        final_hidden, _ = self.encoder(next_states[-1:], hidden)
+        final_hidden, _ = self.encoder(next_states[-1:], hidden, actions[-1] if actions is not None else None)
         hiddens.append(final_hidden)
         return torch.cat(hiddens, dim=0)
 
@@ -76,14 +93,18 @@ class RecurrentOfflineSoftQAgent:
         step handles the whole batch at once. Looping per-episode like
         encode_episode does is ~batch_size times more overhead for nothing."""
         lengths = [ep[0].shape[0] for ep in episodes]
+        if not lengths or min(lengths) < 1 or any(any(len(v) != len(ep[0]) for v in ep) for ep in episodes):
+            raise ValueError('Need nonempty complete episodes with matching transition arrays.')
         max_len = max(lengths)
         batch_size = len(episodes)
         obs_dim = episodes[0][0].shape[1]
         device = episodes[0][0].device
 
         padded_states = torch.zeros(max_len, batch_size, obs_dim, device=device)
+        previous_actions = torch.full((max_len, batch_size), -1, device=device, dtype=torch.long)
         for i, (states, *_rest) in enumerate(episodes):
             padded_states[: lengths[i], i] = states
+            previous_actions[1:lengths[i], i] = episodes[i][2][:-1].reshape(-1)
 
         # featurizer (CNN/MLP) is over one frame with no temporal dependency, meaning we run it once
         # every (t,episode) pair batched together vs. once per timestep
@@ -94,7 +115,7 @@ class RecurrentOfflineSoftQAgent:
         hidden = torch.zeros(batch_size, self.encoder.rnn_hidden_dim, device=device)
         all_h = []
         for t in range(max_len):
-            hidden = self.encoder.gru(latents[t], hidden)
+            hidden = self.encoder.recurrent_step(latents[t], hidden, previous_actions[t])
             all_h.append(hidden)
         all_h = torch.stack(all_h, dim=0)  # [max_len, B, H]
 
@@ -102,7 +123,8 @@ class RecurrentOfflineSoftQAgent:
         batch_arange = torch.arange(batch_size, device=device)
         hidden_before_final = all_h[last_idx, batch_arange]  # [B, H]
         final_next_obs = torch.stack([ep[1][-1] for ep in episodes], dim=0)  # [B, obs_dim]
-        final_hidden, _ = self.encoder(final_next_obs, hidden_before_final)  # [B, H]
+        final_actions = torch.stack([ep[2][-1].reshape(()) for ep in episodes])
+        final_hidden, _ = self.encoder(final_next_obs, hidden_before_final, final_actions)  # [B, H]
 
         all_curr, all_next, all_actions, all_dones = [], [], [], []
         for i, (_states, _next_states, actions, dones) in enumerate(episodes):
@@ -157,25 +179,62 @@ class RecurrentOfflineSoftQAgent:
 
     def reset_hidden(self):
         self._hidden = None
+        self._previous_action = None
 
     def act(self, obs: torch.Tensor, deterministic: bool = True) -> int:
         with torch.no_grad():
-            hidden, _ = self.encoder(obs.unsqueeze(0), self._hidden)
+            hidden, _ = self.encoder(obs.unsqueeze(0), self._hidden, self._previous_action)
             self._hidden = hidden
-            q = self.q_net(hidden)
+            q = self.q_values(hidden)
             probs = F.softmax(q / self.alpha, dim=1)
-        if deterministic:
-            return int(torch.argmax(probs, dim=1).item())
-        return int(Categorical(probs).sample().item())
+        action = int(torch.argmax(probs, dim=1).item()) if deterministic else int(Categorical(probs).sample().item())
+        self._previous_action = action
+        return action
 
     def save(self, path: str):
-        torch.save({"encoder": self.encoder.state_dict(), "q_net": self.q_net.state_dict()}, path)
+        torch.save({"format_version": 2, "config": self.config,
+                    "encoder": self.encoder.state_dict(), "q_net": self.q_net.state_dict()}, path)
 
     def load(self, path: str):
-        state = torch.load(path, map_location=self.device)
+        state = torch.load(path, map_location=self.device, weights_only=True)
+        stored = state.get('config')
+        if stored is None:
+            if self.config['condition_on_action'] or self.config['terminal_semantics'] != 'recorded':
+                raise ValueError('Legacy checkpoints require observation-only memory and recorded terminal semantics; use from_checkpoint().')
+        elif state.get('format_version') != 2 or stored != self.config:
+            raise ValueError('Checkpoint configuration differs from this agent; use from_checkpoint().')
         self.encoder.load_state_dict(state["encoder"])
         self.q_net.load_state_dict(state["q_net"])
         self.target_net.load_state_dict(state["q_net"])
+        self.reset_hidden()
+
+    @classmethod
+    def from_checkpoint(cls, path, *, obs_dim, args, grid_shape=None, device='cpu'):
+        """Load both explicit v2 protocols and legacy observation-only weights."""
+        state = torch.load(path, map_location=device, weights_only=True)
+        config = state.get('config')
+        if config is not None:
+            if state.get('format_version') != 2:
+                raise ValueError('Unsupported recurrent checkpoint version.')
+            if (config['obs_dim'] != obs_dim or config['gamma'] != float(args.gamma)
+                    or config['init_temp'] != float(args.agent.init_temp)):
+                raise ValueError('Observation size, gamma, or temperature disagrees with checkpoint metadata.')
+            if grid_shape is not None and tuple(config['grid_shape'] or ()) != tuple(grid_shape):
+                raise ValueError('Grid shape disagrees with checkpoint metadata.')
+            agent = cls(obs_dim, config['action_dim'], args, latent_dim=config['latent_dim'],
+                        rnn_hidden_dim=config['rnn_hidden_dim'], grid_shape=config['grid_shape'],
+                        condition_on_action=config['condition_on_action'],
+                        terminal_semantics=config['terminal_semantics'], device=device)
+        else:
+            enc = state['encoder']
+            if ('cnn.0.weight' in enc) != (grid_shape is not None):
+                raise ValueError('Legacy CNN checkpoints require the original --grid-shape.')
+            agent = cls(obs_dim, state['q_net']['fc3.weight'].shape[0], args,
+                        latent_dim=enc['gru.weight_ih'].shape[1],
+                        rnn_hidden_dim=enc['gru.weight_hh'].shape[1], grid_shape=grid_shape,
+                        condition_on_action=False, device=device)
+        agent.load(path)
+        return agent
 
 
 __all__ = ["RecurrentOfflineSoftQAgent", "make_args"]

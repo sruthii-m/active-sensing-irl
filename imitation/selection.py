@@ -8,18 +8,20 @@ import warnings
 
 import numpy as np
 import torch
+from imitation.episode_contract import terminal_masks
 
 
-def load_episodes(demo_path: str, device: str):
+def load_episodes(demo_path: str, device: str, *, terminal_semantics='recorded', horizon=None, terminal_audit=None):
     with open(demo_path, "rb") as f:
         data = pickle.load(f)
-    return _episodes_from_data(data, device)
+    return _episodes_from_data(data, device, terminal_semantics, horizon, terminal_audit)
 
 
-def _episodes_from_data(data, device):
+def _episodes_from_data(data, device, terminal_semantics='recorded', horizon=None, terminal_audit=None):
     episodes = []
+    masks = terminal_masks(data, terminal_semantics, horizon, terminal_audit)
     for states, next_states, actions, rewards, dones in zip(
-        data["states"], data["next_states"], data["actions"], data["rewards"], data["dones"], strict=True
+        data["states"], data["next_states"], data["actions"], data["rewards"], masks, strict=True
     ):
         episodes.append(
             (
@@ -113,7 +115,7 @@ def _validation_provenance(training_data, validation_data):
 
 
 def load_training_validation(demo_path, validation_demo_path, validation_fraction, seed, device,
-                             *, split_audit=None):
+                             *, split_audit=None, terminal_semantics='recorded', horizon=None):
     """Load training/validation episodes, auditing files without deduplicating.
 
     Repeated observed trajectories are allowed only with complete, compatible,
@@ -121,6 +123,7 @@ def load_training_validation(demo_path, validation_demo_path, validation_fractio
     of generation or layout independence. Legacy files retain strict checking.
     ``split_audit``, when supplied, receives JSON-serializable diagnostics.
     """
+    terminal_audit = dict(training={}, validation={})
     if validation_demo_path:
         if Path(demo_path).samefile(validation_demo_path):
             raise ValueError('Training and validation must not use the same file.')
@@ -129,24 +132,28 @@ def load_training_validation(demo_path, validation_demo_path, validation_fractio
         with open(validation_demo_path, 'rb') as stream:
             validation_data = pickle.load(stream)
         provenance = _validation_provenance(training_data, validation_data)
-        all_episodes = _episodes_from_data(training_data, device)
-        validation = _episodes_from_data(validation_data, device)
+        all_episodes = _episodes_from_data(training_data, device, terminal_semantics, horizon, terminal_audit['training'])
+        validation = _episodes_from_data(validation_data, device, terminal_semantics, horizon, terminal_audit['validation'])
+        if terminal_audit['training']['effective_semantics'] != terminal_audit['validation']['effective_semantics']:
+            raise ValueError('Training and validation have different recorded terminal semantics; normalize both explicitly.')
         episodes = all_episodes
         train_indices = list(range(len(episodes)))
         validation_indices = list(range(len(validation)))
     else:
-        all_episodes = load_episodes(demo_path, device)
+        all_episodes = load_episodes(demo_path, device, terminal_semantics=terminal_semantics,
+                                     horizon=horizon, terminal_audit=terminal_audit['training'])
         train_indices, validation_indices = validation_split(all_episodes, validation_fraction, seed)
         episodes = [all_episodes[i] for i in train_indices]
         validation = [all_episodes[i] for i in validation_indices]
         provenance = dict(status='grouped_trajectory_holdout')
+        terminal_audit['validation'] = dict(source='shared_file_before_split')
     if any(ep[0].shape[1:] != episodes[0][0].shape[1:] for ep in validation):
         raise ValueError('Validation observation shape does not match training data.')
     train_keys = [episode_fingerprint(ep) for ep in episodes]
     valid_keys = [episode_fingerprint(ep) for ep in validation]
     shared = set(train_keys) & set(valid_keys)
     report = dict(strategy='explicit_validation' if validation_demo_path else 'grouped_trajectory_holdout',
-                  provenance=provenance, train_episodes=len(episodes), validation_episodes=len(validation),
+                  provenance=provenance, terminals=terminal_audit, train_episodes=len(episodes), validation_episodes=len(validation),
                   unique_train_trajectories=len(set(train_keys)), unique_validation_trajectories=len(set(valid_keys)),
                   shared_trajectory_groups=len(shared),
                   train_episodes_matching_validation=sum(key in shared for key in train_keys),
@@ -180,7 +187,7 @@ def evaluate_imitation(agent, episodes):
     episode_nll, total_nll, steps, correct = [], 0., 0, 0
     try:
         for states, next_states, actions, *_ in episodes:
-            features = agent.encode_episode(states, next_states)[:-1] if hasattr(agent, 'encoder') else states
+            features = agent.encode_episode(states, next_states, actions)[:-1] if hasattr(agent, 'encoder') else states
             q = agent.q_net(features)
             logp = (q / agent.alpha).log_softmax(-1)
             nll = -logp.gather(1, actions.long()).squeeze(1)

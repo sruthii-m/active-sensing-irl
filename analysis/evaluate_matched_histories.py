@@ -34,7 +34,7 @@ def replay(env, initial_obs, actions, agent):
         observations, positions = [], []
         for step in range(len(actions) + 1):
             belief.observe(env)
-            hidden = representation(agent, obs, hidden)
+            hidden = representation(agent, obs, hidden, -1 if step == 0 else actions[step - 1])
             observations.append(np.asarray(obs).copy())
             positions.append((*env.unwrapped.agent_pos, env.unwrapped.agent_dir))
             if step == len(actions):

@@ -202,7 +202,7 @@ class SelectionTests(unittest.TestCase):
             q_net = torch.nn.Identity()
             alpha = .5
 
-            def encode_episode(self, states, next_states):
+            def encode_episode(self, states, next_states, actions):
                 self_test.assertFalse(torch.is_grad_enabled())
                 self_test.assertFalse(self.encoder.training)
                 return torch.cat([states, next_states[-1:]])
@@ -350,7 +350,7 @@ class FullStateSelectionTests(unittest.TestCase):
                 agent = task_success.call_args.args[0]
                 measured = full_trainer.evaluate_imitation(agent, valid_episodes)['episode_mean_nll']
                 self.assertAlmostEqual(measured, metadata['best_validation_nll'])
-                saved = torch.load(checkpoint, weights_only=True)
+                saved = torch.load(checkpoint, weights_only=True)['q_net']
                 for key, value in agent.q_net.state_dict().items():
                     torch.testing.assert_close(saved[key], value)
                     torch.testing.assert_close(agent.target_net.state_dict()[key], value)

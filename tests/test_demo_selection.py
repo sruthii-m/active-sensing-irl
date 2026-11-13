@@ -22,6 +22,8 @@ class Environment:
     def __init__(self):
         self.seeds = []
         self.closed = False
+        self.unwrapped = self
+        self.max_steps = 3
 
     def reset(self, seed):
         self.seeds.append(seed)
@@ -40,13 +42,13 @@ class Environment:
 
 class DemoSelectionTests(unittest.TestCase):
     def test_default_keeps_failures_and_long_episodes_in_both_generators(self):
-        for module, loader, factory in [(full, full.PPO, 'make_full_obs_learning_env'),
-                                        (partial, partial.RecurrentPPO, 'make_partial_obs_learning_env')]:
+        for module, loader, loader_name, factory in [(full, full.PPO, 'load', 'make_full_obs_learning_env'),
+                                        (partial, partial, 'load_model', 'make_partial_obs_learning_env')]:
             with self.subTest(module=module.__name__), tempfile.TemporaryDirectory() as root:
                 env = Environment()
                 path = Path(root) / 'demos.pkl'
                 kwargs = {'max_length': 1} if module is partial else {}
-                with patch.object(loader, 'load', return_value=Model()), patch.object(module, factory, return_value=env), contextlib.redirect_stdout(io.StringIO()):
+                with patch.object(loader, loader_name, return_value=Model()), patch.object(module, factory, return_value=env), contextlib.redirect_stdout(io.StringIO()):
                     module.generate('expert', {}, 2, str(path), seed=42, **kwargs)
                 with path.open('rb') as stream:
                     data = pickle.load(stream)
@@ -55,6 +57,11 @@ class DemoSelectionTests(unittest.TestCase):
                 self.assertEqual(env.seeds, [42, 43])
                 self.assertEqual([r.sum() for r in data['rewards']], [0., 1.])
                 self.assertEqual(data['lengths'].tolist(), [3, 3])
+                self.assertEqual(data['episode_seeds'], [42, 43])
+                self.assertEqual(data['task_horizon'], 3)
+                self.assertTrue(all(d[-1] for d in data['task_terminal']))
+                self.assertTrue(data['truncated'][0][-1])
+                self.assertFalse(data['terminated'][0][-1])
                 self.assertTrue(env.closed)
 
 

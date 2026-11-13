@@ -50,7 +50,7 @@ def evaluate(agent, data, expert=None, step_rows=None):
         actions = torch.as_tensor(actions, dtype=torch.long).reshape(-1)
         if len(states) == 0 or len(actions) != len(states):
             raise ValueError('Each episode must contain matching nonempty states/actions.')
-        h = agent.encode_episode(states, next_states)[:-1] if hasattr(agent, 'encoder') else states
+        h = agent.encode_episode(states, next_states, actions)[:-1] if hasattr(agent, 'encoder') else states
         q = agent.q_net(h)
         logp = torch.log_softmax(q / agent.alpha, dim=-1)
         ll = logp.gather(1, actions[:, None]).squeeze(1)

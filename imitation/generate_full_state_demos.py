@@ -9,6 +9,7 @@ from environment.experiment_config import add_environment_args, environment_kwar
 
 import numpy as np
 from stable_baselines3 import PPO
+from imitation.episode_contract import task_terminal
 
 from environment import make_full_obs_learning_env
 
@@ -18,11 +19,14 @@ def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str
     env = make_full_obs_learning_env(**(env_kwargs or {}))
 
     states, next_states, actions, rewards, dones, lengths = [], [], [], [], [], []
+    terminated_flags, truncated_flags, episode_seeds = [], [], []
+    horizon = env.unwrapped.max_steps
     attempts = 0
     while len(lengths) < num_episodes:
         obs, _ = env.reset(seed=seed + attempts)
         attempts += 1
         ep_states, ep_next_states, ep_actions, ep_rewards, ep_dones = [], [], [], [], []
+        ep_terminated, ep_truncated = [], []
         terminated = truncated = False
         while not (terminated or truncated):
             action, _ = model.predict(obs, deterministic=True)
@@ -31,7 +35,9 @@ def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str
             ep_next_states.append(np.asarray(next_obs, dtype=np.float32))
             ep_actions.append(int(action))
             ep_rewards.append(float(reward))
-            ep_dones.append(bool(terminated))
+            ep_terminated.append(bool(terminated))
+            ep_truncated.append(bool(truncated))
+            ep_dones.append(task_terminal(terminated, truncated, len(ep_actions), horizon))
             obs = next_obs
 
         # Optional legacy filtering; failures are also part of expert behavior.
@@ -44,6 +50,9 @@ def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str
         rewards.append(np.array(ep_rewards, dtype=np.float32))
         dones.append(np.array(ep_dones, dtype=bool))
         lengths.append(len(ep_actions))
+        terminated_flags.append(np.asarray(ep_terminated, dtype=bool))
+        truncated_flags.append(np.asarray(ep_truncated, dtype=bool))
+        episode_seeds.append(seed + attempts - 1)
     env.close()
     print(f"Kept {num_episodes} trajectories out of {attempts} rollouts.")
 
@@ -62,6 +71,13 @@ def generate(model_path: str, env_kwargs: dict, num_episodes: int, out_path: str
                 "actions": actions,
                 "rewards": rewards,
                 "dones": dones,
+                "task_terminal": dones,
+                "terminated": terminated_flags,
+                "truncated": truncated_flags,
+                "task_horizon": horizon,
+                "terminal_semantics": "intrinsic_horizon",
+                "starts_at_reset": True,
+                "episode_seeds": episode_seeds,
                 "lengths": np.array(lengths, dtype=np.int64),
             },
             f,

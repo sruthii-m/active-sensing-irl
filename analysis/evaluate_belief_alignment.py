@@ -92,12 +92,13 @@ def main():
             obs, _ = env.reset(seed=args.seed + episode)
             belief = DiscreteGoalBelief.from_env(env)
             hidden, done, timestep = None, False, 0
+            previous_action = -1
             goal = next((x, y) for x in range(env.unwrapped.width)
                         for y in range(env.unwrapped.height)
                         if (o := env.unwrapped.grid.get(x, y)) is not None and o.type == 'goal')
             while not done:
                 belief.observe(env)
-                hidden = representation(agent, obs, hidden)
+                hidden = representation(agent, obs, hidden, previous_action)
                 q = agent.q_net(hidden)[0].numpy()
                 scores, new = belief.action_scores(env)
                 ig_action, ties = select_action(scores)
@@ -135,6 +136,7 @@ def main():
                             row[f'{prefix}q_{a}'] = float(value)
                 rows.append(row)
                 obs, reward, terminated, truncated, _ = env.step(reward_action)
+                previous_action = reward_action
                 done = terminated or truncated
                 successes += int(reward > 0)
                 timestep += 1

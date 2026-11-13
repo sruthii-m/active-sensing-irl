@@ -16,11 +16,13 @@ class RecurrentEncoder(nn.Module):
     Any leftover scalar features (e.g. direction) get concatenated in after.
     """
 
-    def __init__(self, obs_shape, latent_dim: int, rnn_hidden_dim: int, grid_shape: tuple[int, int, int] | None = None):
+    def __init__(self, obs_shape, latent_dim: int, rnn_hidden_dim: int, grid_shape: tuple[int, int, int] | None = None,
+                 action_dim: int | None = None):
         super().__init__()
         obs_dim = obs_shape[0] if isinstance(obs_shape, (tuple, list)) else obs_shape
         self.rnn_hidden_dim = rnn_hidden_dim
         self.grid_shape = grid_shape
+        self.action_dim = action_dim
 
         if grid_shape is not None:
             h, w, c = grid_shape
@@ -39,7 +41,7 @@ class RecurrentEncoder(nn.Module):
             self.grid_flat_dim = None
             self.mlp = nn.Sequential(nn.Linear(obs_dim, latent_dim), nn.ReLU())
 
-        self.gru = nn.GRUCell(latent_dim, rnn_hidden_dim)
+        self.gru = nn.GRUCell(latent_dim + (action_dim + 1 if action_dim is not None else 0), rnn_hidden_dim)
 
     def _featurize(self, obs: torch.Tensor) -> torch.Tensor:
         if self.grid_shape is None:
@@ -51,9 +53,32 @@ class RecurrentEncoder(nn.Module):
             conv_out = torch.cat([conv_out, obs[:, self.grid_flat_dim :]], dim=1)
         return self.mlp(conv_out)
 
-    def forward(self, obs: torch.Tensor, hidden_state: torch.Tensor | None):
-        latent = self._featurize(obs)
+    def recurrent_step(self, latent, hidden_state, previous_action=None):
+        """Consume (o_t, a_{t-1}); -1 is a distinct episode-reset token.
+
+        A missing action is allowed only at reset (or for legacy obs-only models).
+        Keeping this operation shared prevents batch/replay/rollout drift.
+        """
+        if self.action_dim is not None:
+            if previous_action is None:
+                if hidden_state is not None:
+                    raise ValueError('Action-conditioned memory requires the previous action after reset.')
+                previous_action = -1
+            tokens = torch.as_tensor(previous_action, device=latent.device)
+            if tokens.is_floating_point() or tokens.dtype == torch.bool:
+                raise ValueError('Previous actions must be integer tokens (-1 for reset).')
+            tokens = tokens.reshape(-1)
+            if tokens.numel() == 1:
+                tokens = tokens.expand(latent.shape[0])
+            if tokens.numel() != latent.shape[0] or torch.any((tokens < -1) | (tokens >= self.action_dim)):
+                raise ValueError('Invalid previous-action token or batch shape.')
+            tokens = torch.where(tokens == -1, self.action_dim, tokens).long()
+            one_hot = torch.nn.functional.one_hot(tokens, self.action_dim + 1).to(latent.dtype)
+            latent = torch.cat((latent, one_hot), dim=-1)
         if hidden_state is None:
-            hidden_state = torch.zeros(obs.shape[0], self.rnn_hidden_dim, device=obs.device)
-        new_hidden = self.gru(latent, hidden_state)
+            hidden_state = latent.new_zeros(latent.shape[0], self.rnn_hidden_dim)
+        return self.gru(latent, hidden_state)
+
+    def forward(self, obs: torch.Tensor, hidden_state: torch.Tensor | None, previous_action=None):
+        new_hidden = self.recurrent_step(self._featurize(obs), hidden_state, previous_action)
         return new_hidden, new_hidden
